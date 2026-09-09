@@ -10,7 +10,7 @@
 (function (root) {
   'use strict';
 
-  const APP_VERSION = '1.0.0';
+  const APP_VERSION = '1.1.0';
   const K = { api: 'jcm.api', key: 'jcm.key', lists: 'jcm.lists', queue: 'jcm.queue', draft: 'jcm.draft' };
   const MAX_SENT_HISTORY = 300;
   const REQUEST_TIMEOUT_MS = 25000;
@@ -31,6 +31,21 @@
   }
   function fmtDate(iso) {   // 2026-09-08 → 08-09-2026
     const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || ''); return m ? m[3] + '-' + m[2] + '-' + m[1] : (iso || '');
+  }
+
+  // textarea/array → साफ़ नामों की list (trim, खाली हटाओ, दुहराव हटाओ)
+  function cleanNames(v) {
+    const arr = Array.isArray(v) ? v : String(v == null ? '' : v).split('\n');
+    const out = [], seen = {};
+    arr.forEach(function (s) {
+      const t = String(s).replace(/\s+/g, ' ').trim();
+      if (!t || seen[t]) return;
+      seen[t] = 1; out.push(t);
+    });
+    return out;
+  }
+  function statusText(it) {
+    return it.status === 'sent' ? 'Sheet में गई' : it.status === 'failed' ? 'अटकी' : 'फ़ोन में';
   }
 
   // server जैसी ही validation (server authoritative है; यह user को तुरंत बताने के लिए)
@@ -180,12 +195,76 @@
         if (i < 0 || q[i].status === 'sent') return false;   // sent rows phone से नहीं हटतीं (Sheet ही सच है)
         q.splice(i, 1); set(K.queue, q); return true;
       },
-      clearSent: function () { set(K.queue, core.queue().filter(function (i) { return i.status !== 'sent'; })); }
+      clearSent: function () { set(K.queue, core.queue().filter(function (i) { return i.status !== 'sent'; })); },
+
+      // ---------- सिर्फ़-फ़ोन (offline) मोड ----------
+      // कोई Web App URL सेट नहीं = app पूरी तरह local database पर चलती है।
+      localOnly: function () { return !core.getApi(); },
+
+      // लेबर/सामान/कार्य प्रकार खुद भरो — Sheet या internet की ज़रूरत नहीं
+      setLocalLists: function (l) {
+        const clean = {
+          labour: cleanNames(l && l.labour), goods: cleanNames(l && l.goods), types: cleanNames(l && l.types),
+          fetchedAt: now().toISOString(), source: 'local'
+        };
+        if (!clean.types.length) throw new Error('कम से कम एक कार्य प्रकार लिखो (जैसे लोडिंग, अनलोडिंग)।');
+        if (!clean.goods.length) throw new Error('कम से कम एक सामान लिखो (जैसे चूड़ा, धान)।');
+        if (!clean.labour.length) throw new Error('कम से कम एक लेबर का नाम लिखो।');
+        set(K.lists, clean);
+        return clean;
+      },
+
+      // सारी entries CSV में — Excel/Sheet में paste या WhatsApp पर भेजने के लिए
+      toCSV: function () {
+        const head = ['क्रम', 'दिनांक', 'कार्य प्रकार', 'सामान', 'स्टार्ट', 'फिनिश', 'कुल समय', 'कुल बोरा',
+                      'लेबर संख्या', 'लेबर', 'स्थिति', 'बनाई गई', 'Sheet row'];
+        const rows = core.queue().slice().reverse().map(function (it, i) {
+          const e = it.entry;
+          return [i + 1, e.date, e.type, e.goods, e.start, e.finish, durationText(e.start, e.finish), e.bags,
+                  e.labour.length, e.labour.join(', '), statusText(it), it.createdAt,
+                  (it.result && it.result.serial != null) ? it.result.serial : ''];
+        });
+        return [head].concat(rows).map(function (r) {
+          return r.map(function (c) {
+            const s = String(c == null ? '' : c);
+            return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+          }).join(',');
+        }).join('\r\n');
+      },
+
+      // पूरा backup (entries + लिस्ट) — इसे सुरक्षित जगह रख लो
+      exportJSON: function () {
+        return JSON.stringify({
+          app: 'jcm-loading', version: APP_VERSION, exportedAt: now().toISOString(),
+          lists: core.lists(), queue: core.queue()
+        }, null, 1);
+      },
+
+      // backup वापस डालो — id से मिलान, सिर्फ़ नई entries जुड़ती हैं; मौजूदा कुछ नहीं मिटता
+      importJSON: function (text) {
+        let data;
+        try { data = JSON.parse(String(text || '')); }
+        catch (_) { throw new Error('यह backup पढ़ा नहीं गया — पूरा text paste हुआ?'); }
+        if (!data || data.app !== 'jcm-loading' || !Array.isArray(data.queue)) throw new Error('यह JCM का backup नहीं लगता।');
+        const q = core.queue(), have = {};
+        q.forEach(function (i) { have[i.id] = true; });
+        let added = 0, bad = 0;
+        data.queue.forEach(function (it) {
+          if (!it || !it.id || have[it.id]) return;
+          if (!it.entry || validate(it.entry, null)) { bad++; return; }
+          q.push(it); have[it.id] = true; added++;
+        });
+        q.sort(function (a, b) { return String(b.createdAt || '').localeCompare(String(a.createdAt || '')); });
+        set(K.queue, q);
+        let lists = 0;
+        if (!core.lists() && data.lists && Array.isArray(data.lists.labour)) { set(K.lists, data.lists); lists = 1; }
+        return { added: added, bad: bad, lists: lists };
+      }
     };
     return core;
   }
 
-  const api = { createCore: createCore, validate: validate, uuid: uuid, todayLocal: todayLocal, durationText: durationText, fmtDate: fmtDate, APP_VERSION: APP_VERSION };
+  const api = { createCore: createCore, validate: validate, uuid: uuid, todayLocal: todayLocal, durationText: durationText, fmtDate: fmtDate, cleanNames: cleanNames, APP_VERSION: APP_VERSION };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.JCM = api;
 
@@ -195,7 +274,8 @@
   if (typeof document === 'undefined') return;
 
   const $ = function (id) { return document.getElementById(id); };
-  const core = createCore({ storage: localStorage, fetchFn: fetch.bind(root) });
+  const store = (root.JCMDB && root.JCMDB.createStore()) || localStorage;   // db.js = IndexedDB; न मिले तो localStorage
+  const core = createCore({ storage: store, fetchFn: fetch.bind(root) });
   let selType = null, selLabour = {}, view = 'entry', toastTimer = null, deferredInstall = null;
 
   // ---- helpers
@@ -214,7 +294,7 @@
     const gEl = $('goods'); const keepG = gEl.value; gEl.innerHTML = '<option value="">-- चुनो --</option>';
     const lEl = $('labour'); lEl.innerHTML = '';
     if (!d) {
-      $('labourHint').textContent = 'पहली बार network चाहिए: ⚙ सेटिंग में Web App URL डालकर Test करो।';
+      $('labourHint').textContent = 'लिस्ट अभी खाली है — ⚙ सेटिंग → "लोकल लिस्ट" में नाम खुद भर दो (internet की ज़रूरत नहीं), या Web App URL डालकर Sheet से मँगा लो।';
       return;
     }
     d.types.forEach(function (name) {
@@ -273,13 +353,17 @@
     const nP = q.filter(function (i) { return i.status === 'pending'; }).length;
     const nF = q.filter(function (i) { return i.status === 'failed'; }).length;
     const nS = q.length - nP - nF;
+    const solo = core.localOnly();
+    $('syncBtn').hidden = solo;
+    $('lblPending').textContent = solo ? 'फ़ोन में सुरक्षित' : 'बाकी (pending)';
     $('nPending').textContent = nP; $('nFailed').textContent = nF; $('nSent').textContent = nS;
     $('badge').textContent = (nP + nF) ? String(nP + nF) : '';
     const box = $('items'); box.innerHTML = '';
     if (!q.length) { box.innerHTML = '<div class="empty">अभी कोई entry नहीं।</div>'; return; }
     q.forEach(function (it) {
       const e = it.entry; const d = document.createElement('div'); d.className = 'item';
-      const st = it.status === 'pending' ? 'बाकी' : it.status === 'sent' ? ('Sheet row ' + (it.result && it.result.serial != null ? it.result.serial : '?')) : 'अटकी';
+      const st = it.status === 'pending' ? (solo ? 'फ़ोन में' : 'बाकी')
+               : it.status === 'sent' ? ('Sheet row ' + (it.result && it.result.serial != null ? it.result.serial : '?')) : 'अटकी';
       d.innerHTML =
         '<div class="t"><span>' + esc(fmtDate(e.date)) + ' · ' + esc(e.type) + ' · ' + esc(e.goods) + '</span><span class="st ' + it.status + '">' + esc(st) + '</span></div>' +
         '<div class="s">' + esc(e.start) + '–' + esc(e.finish) + ' · ' + esc(e.bags) + ' बोरा · ' + e.labour.length + ' लेबर: ' + esc(e.labour.join(', ')) + '</div>' +
@@ -304,6 +388,11 @@
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
 
   async function doSync(quiet) {
+    if (core.localOnly()) {   // कोई Web App URL नहीं → सब कुछ फ़ोन में ही रहता है
+      renderList();
+      if (!quiet) toast('यह app अभी सिर्फ़ फ़ोन पर चल रही है — entries यहीं सुरक्षित हैं।');
+      return;
+    }
     if (!core.pending().length) { renderList(); if (!quiet) toast('भेजने को कुछ बाकी नहीं।'); return; }
     if (!online()) { if (!quiet) toast('Offline हो — network आते ही अपने-आप भेजेगा।', 'err'); return; }
     const btn = $('syncBtn'); btn.disabled = true; btn.textContent = '☁ भेज रहा है…';
@@ -324,13 +413,62 @@
     const tabs = document.querySelectorAll('nav.tabs button');
     tabs.forEach(function (b) { b.className = b.getAttribute('data-view') === v ? 'on' : ''; });
     if (v === 'list') renderList();
-    if (v === 'settings') { $('api').value = core.getApi(); $('key').value = core.getKey(); listsInfo(); }
+    if (v === 'settings') { $('api').value = core.getApi(); $('key').value = core.getKey(); fillLocalLists(); listsInfo(); dbInfo(); }
     window.scrollTo(0, 0);
   }
   function listsInfo() {
     const l = core.lists();
-    $('listsInfo').textContent = l ? (l.labour.length + ' लेबर, ' + l.goods.length + ' सामान, ' + l.types.length + ' कार्य प्रकार · ' + new Date(l.fetchedAt).toLocaleString('hi-IN')) : 'लिस्ट अभी नहीं आई।';
+    $('listsInfo').textContent = l
+      ? (l.labour.length + ' लेबर, ' + l.goods.length + ' सामान, ' + l.types.length + ' कार्य प्रकार · ' +
+         (l.source === 'local' ? 'फ़ोन में भरी हुई' : 'Sheet से आई') + ' · ' + new Date(l.fetchedAt).toLocaleString('hi-IN'))
+      : 'लिस्ट अभी खाली है।';
     $('ver').textContent = APP_VERSION;
+  }
+
+  // ---- local list editor
+  function fillLocalLists() {
+    const l = core.lists() || { labour: [], goods: [], types: [] };
+    $('llTypes').value = (l.types || []).join('\n');
+    $('llGoods').value = (l.goods || []).join('\n');
+    $('llLabour').value = (l.labour || []).join('\n');
+  }
+
+  // ---- मोड के हिसाब से hint
+  function modeHints() {
+    $('saveHint').textContent = core.localOnly()
+      ? 'Save होते ही entry फ़ोन के local database में सुरक्षित। (Web App URL डालोगे तो Google Sheet में भी जाने लगेगी।)'
+      : 'Save होते ही entry phone में सुरक्षित; network मिलते ही Google Sheet में जाती है।';
+  }
+
+  // ---- database की हालत (सेटिंग में)
+  async function dbInfo() {
+    const b = (store.backend ? store.backend() : 'localstorage');
+    const name = b === 'indexeddb' ? 'IndexedDB (फ़ोन का local database)'
+               : b === 'localstorage' ? 'localStorage (छोटी capacity)'
+               : 'कोई storage नहीं';
+    let extra = '';
+    try {
+      if (store.estimate) {
+        const e = await store.estimate();
+        if (e && e.usage) extra = ' · ' + (e.usage < 1048576 ? Math.max(1, Math.round(e.usage / 1024)) + ' KB' : (e.usage / 1048576).toFixed(1) + ' MB') + ' इस्तेमाल';
+      }
+    } catch (_) { }
+    $('dbInfo').textContent = core.queue().length + ' entry · ' + name + extra;
+    const err = store.lastError ? store.lastError() : '';
+    $('dbErr').textContent = err || '';
+    $('dbErr').hidden = !err;
+  }
+
+  // ---- export / backup
+  function showData(text, label) {
+    $('dataBox').hidden = false;
+    $('dataOut').value = text;
+    $('dataLabel').textContent = label;
+    $('dataOut').scrollIntoView({ block: 'nearest' });
+  }
+  async function copyText(t) {
+    try { if (navigator.clipboard && navigator.clipboard.writeText) { await navigator.clipboard.writeText(t); return true; } } catch (_) { }
+    try { const el = $('dataOut'); el.focus(); el.select(); return document.execCommand('copy'); } catch (_) { return false; }
   }
 
   // ---- events
@@ -344,8 +482,9 @@
     try {
       const it = core.enqueue(e);
       buzz(40); resetForm(true); renderList();
-      toast('✔ Entry save हुई (' + it.entry.labour.length + ' लेबर)' + (online() ? ' — Sheet में भेज रहा है…' : ' — offline, बाद में जाएगी'), 'ok');
-      if (online()) {
+      toast('✔ Entry save हुई (' + it.entry.labour.length + ' लेबर)' +
+        (core.localOnly() ? ' — फ़ोन में सुरक्षित' : online() ? ' — Sheet में भेज रहा है…' : ' — offline, बाद में जाएगी'), 'ok');
+      if (!core.localOnly() && online()) {
         const r = await core.sync(); renderList();
         if (r.sent) toast('☁ Sheet में row ' + (core.sent()[0] && core.sent()[0].result ? core.sent()[0].result.serial : '') + ' बन गई', 'ok');
         else if (r.failed) toast('✖ Server ने reject किया — सूची में देखो', 'err', 4000);
@@ -374,6 +513,37 @@
   };
   $('clearSent').onclick = function () { if (confirm('सिर्फ भेजी हुई entries का local इतिहास हटेगा (Sheet पर असर नहीं)। ठीक?')) { core.clearSent(); renderList(); toast('इतिहास साफ़', 'ok'); } };
 
+  // ---- लोकल लिस्ट (बिना internet)
+  $('saveLists').onclick = function () {
+    try {
+      const l = core.setLocalLists({ types: $('llTypes').value, goods: $('llGoods').value, labour: $('llLabour').value });
+      renderLists(); listsInfo(); modeHints(); fillLocalLists();
+      toast('✔ लिस्ट फ़ोन में save हुई (' + l.labour.length + ' लेबर)', 'ok');
+    } catch (e) { toast(e.message, 'err', 4000); }
+  };
+
+  // ---- export / backup / restore
+  $('exportCsv').onclick = function () {
+    const n = core.queue().length;
+    if (!n) { toast('अभी कोई entry नहीं।', 'err'); return; }
+    showData(core.toCSV(), n + ' entry — CSV (Excel/Sheet में paste करो)');
+  };
+  $('exportJson').onclick = function () {
+    showData(core.exportJSON(), 'पूरा backup — इसे सुरक्षित जगह रख लो');
+  };
+  $('copyOut').onclick = async function () {
+    const ok = await copyText($('dataOut').value);
+    toast(ok ? '📋 copy हो गया — अब WhatsApp/Email में paste करो' : 'Copy नहीं हुआ — text चुनकर हाथ से copy करो', ok ? 'ok' : 'err', 3500);
+  };
+  $('restoreBtn').onclick = function () {
+    try {
+      const r = core.importJSON($('restoreIn').value);
+      renderList(); renderLists(); listsInfo(); fillLocalLists(); dbInfo();
+      $('restoreIn').value = '';
+      toast('♻ ' + r.added + ' नई entry जुड़ीं' + (r.bad ? ', ' + r.bad + ' खराब छोड़ीं' : '') + (r.lists ? ', लिस्ट भी आई' : ''), 'ok', 4000);
+    } catch (e) { toast(e.message, 'err', 4000); }
+  };
+
   window.addEventListener('online', function () { setNet(); doSync(true); });
   window.addEventListener('offline', setNet);
   document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'visible' && online()) doSync(true); });
@@ -382,6 +552,7 @@
 
   // ---- boot
   (async function boot() {
+    if (store.ready) await store.ready();   // local database खुलने तक रुको (पुराना localStorage data अपने-आप आ जाता है)
     // ?api=…&key=… से एक बार settings भर सकते हो (URL फिर साफ़ हो जाता है)
     try {
       const u = new URL(location.href);
@@ -397,6 +568,7 @@
     const inApk = /appassets\.androidplatform\.net$/.test(location.hostname);   // Android app (WebView) में चल रहा है
     if (!inApk && 'serviceWorker' in navigator) { navigator.serviceWorker.register('./sw.js').catch(function () { }); }
     setNet();
+    modeHints();
     $('installHint').textContent = inApk ? 'यह installed app है।' : /iPhone|iPad/.test(navigator.userAgent) ? 'iPhone: Safari में Share → "Add to Home Screen"।' : 'Android/Chrome: menu → "Add to Home screen" / "Install app"।';
     $('ver').textContent = APP_VERSION;
     $('date').value = todayLocal();
@@ -407,6 +579,7 @@
       try { await core.refreshLists(); renderLists(); if (draft) loadEntry(draft); } catch (_) { /* cache से चलेगा */ }
       doSync(true);
     }
-    if (!core.getApi()) showView('settings');
+    // URL भी नहीं और लिस्ट भी नहीं → पहली बार सेटिंग दिखाओ (लिस्ट भर ली हो तो app सीधे चलेगी)
+    if (!core.getApi() && !core.lists()) showView('settings');
   })();
 })(typeof window !== 'undefined' ? window : globalThis);

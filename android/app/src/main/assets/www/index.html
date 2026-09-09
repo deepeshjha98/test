@@ -75,6 +75,11 @@
              opacity: 0; pointer-events: none; transition: opacity .2s; z-index: 9; }
     #toast.show { opacity: 1; }
     #toast.ok { background: var(--green); } #toast.err { background: var(--red); }
+    textarea { width: 100%; font-size: 15px; padding: 10px; border: 1px solid #b9c1cb; border-radius: 10px;
+               background: #fff; color: var(--text); font-family: inherit; resize: vertical; }
+    textarea:focus { outline: 2px solid var(--blue); border-color: var(--blue); }
+    textarea.mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 12px; }
+    .warn { font-size: 13px; color: var(--red); margin-top: 6px; font-weight: 600; }
     .kv { font-size: 13px; color: var(--muted); }
     code { font-size: 13px; background: #eef1f5; padding: 1px 5px; border-radius: 5px; }
   </style>
@@ -116,13 +121,13 @@
     </div>
 
     <button class="btn" id="save">✔ Save करो</button>
-    <div class="hint" style="text-align:center;margin-top:8px">Save होते ही entry phone में सुरक्षित; network मिलते ही Google Sheet में जाती है।</div>
+    <div class="hint" id="saveHint" style="text-align:center;margin-top:8px">Save होते ही entry phone में सुरक्षित; network मिलते ही Google Sheet में जाती है।</div>
   </section>
 
   <!-- ================= सूची / sync ================= -->
   <section id="view-list" hidden>
     <div class="summary">
-      <div><b id="nPending">0</b><span>बाकी (pending)</span></div>
+      <div><b id="nPending">0</b><span id="lblPending">बाकी (pending)</span></div>
       <div><b id="nFailed">0</b><span>अटकी (failed)</span></div>
       <div><b id="nSent">0</b><span>Sheet में गईं</span></div>
     </div>
@@ -142,6 +147,43 @@
       <div class="hint" id="testOut"></div>
     </div>
     <div class="card">
+      <label>लोकल लिस्ट (बिना internet — हर लाइन में एक नाम)</label>
+      <div class="hint" style="margin-top:0">Sheet न हो तो यहीं भर दो। App इन्हीं से चलेगी।</div>
+
+      <label>कार्य प्रकार</label>
+      <textarea id="llTypes" rows="2" placeholder="लोडिंग&#10;अनलोडिंग"></textarea>
+
+      <label>सामान का प्रकार</label>
+      <textarea id="llGoods" rows="3" placeholder="चूड़ा&#10;धान&#10;चावल"></textarea>
+
+      <label>लेबर के नाम</label>
+      <textarea id="llLabour" rows="6" placeholder="राम कुमार&#10;श्याम यादव&#10;मोहन साह"></textarea>
+
+      <button class="btn blue" id="saveLists">लिस्ट फ़ोन में save करो</button>
+    </div>
+
+    <div class="card">
+      <label>डेटा — निकालो / backup</label>
+      <div class="hint" style="margin-top:0">फ़ोन का data फ़ोन में ही है। महीने में एक बार backup ज़रूर लो।</div>
+      <button class="btn ghost" id="exportCsv">📄 CSV बनाओ (Excel/Sheet के लिए)</button>
+      <button class="btn ghost" id="exportJson">💾 पूरा backup बनाओ (JSON)</button>
+
+      <div id="dataBox" hidden>
+        <label id="dataLabel"></label>
+        <textarea id="dataOut" class="mono" rows="8" readonly></textarea>
+        <button class="btn blue" id="copyOut">📋 Copy करो</button>
+      </div>
+
+      <label style="margin-top:16px">Backup वापस डालो</label>
+      <textarea id="restoreIn" class="mono" rows="4" placeholder="यहाँ backup का JSON paste करो"></textarea>
+      <div class="hint">सिर्फ़ नई entries जुड़ेंगी — मौजूदा कुछ नहीं मिटेगा।</div>
+      <button class="btn ghost" id="restoreBtn">♻ Restore करो</button>
+
+      <div class="kv" id="dbInfo" style="margin-top:12px"></div>
+      <div class="warn" id="dbErr" hidden></div>
+    </div>
+
+    <div class="card">
       <button class="btn ghost" id="refreshLists" style="margin-top:0">↻ लेबर/सामान लिस्ट refresh</button>
       <div class="hint" id="listsInfo"></div>
       <button class="btn blue" id="installBtn" hidden>📲 App install करो</button>
@@ -160,6 +202,7 @@
 <div id="toast"></div>
 
 <script src="config.js"></script>
+<script src="db.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
