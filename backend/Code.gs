@@ -26,7 +26,12 @@ function doPost(e) {
   try {
     var body = JSON.parse((e && e.postData && e.postData.contents) || '{}');
 
-    if (APP_KEY && String(body.key || '') !== APP_KEY) return json({ ok: false, error: 'App key गलत है — ⚙ सेटिंग में key जाँचो।' });
+    // दोनों तरफ़ trim: APP_KEY में गलती से आगे/पीछे space रह जाए तो key बेवजह गलत न बताए
+    // (app भी key save करते समय trim करती है)
+    var wantKey = String(APP_KEY == null ? '' : APP_KEY).trim();
+    if (wantKey && String(body.key == null ? '' : body.key).trim() !== wantKey) {
+      return json({ ok: false, error: 'App key गलत है — ⚙ सेटिंग में key जाँचो।' });
+    }
 
     switch (body.action) {
       case 'ping':  return json({ ok: true, sheet: SpreadsheetApp.getActive().getName() });
