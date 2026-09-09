@@ -4,8 +4,26 @@ Phone की app सीधे Sheet में नहीं लिख सकत�
 जो Google Apps Script पर चलता है और आपकी Sheet में row लिखता है।
 एक ही बार लगाना है, लगभग 5 मिनट।
 
-## Step 1 — Sheet में script खोलो
+## Step 1 — script editor खोलो
+
+दो रास्ते हैं। **फ़ोन पर रास्ता B ही चलेगा।**
+
+### रास्ता A — कंप्यूटर पर (Sheet के अंदर से)
 अपनी Google Sheet खोलो → ऊपर **Extensions → Apps Script**।
+`Code.gs` में `SHEET_ID` खाली ही रहने दो — script उसी Sheet में लिखेगा जिसके अंदर वह है।
+
+### रास्ता B — फ़ोन पर (अलग standalone script)
+Android में Sheet का link हमेशा Sheets app में खुल जाता है, और उस app में
+"Extensions → Apps Script" होता ही नहीं। इसलिए Sheet के रास्ते मत जाओ:
+
+1. Chrome में सीधे **script.google.com** खोलो (यह किसी app में redirect नहीं होता)
+2. **New project** दबाओ
+3. `Code.gs` में **`SHEET_ID`** में अपनी Sheet का ID डालो — वह Sheet के URL में
+   `/d/` और `/edit` के बीच वाला लंबा हिस्सा है:
+   `docs.google.com/spreadsheets/d/`**`यही ID`**`/edit`
+
+दोनों रास्तों में आगे का काम एक जैसा है।
+
 जो पुराना code दिखे उसे मिटाकर इस folder की `Code.gs` की **पूरी content** paste करो।
 
 ## Step 2 — अपनी key डालो
@@ -72,4 +90,6 @@ Phone में app → ⚙ सेटिंग → URL और key भरो → 
 | `Server से JSON नहीं मिला` | Deploy में "Who has access" = Anyone नहीं है, या URL `/exec` पर ख़त्म नहीं होता |
 | `App key गलत है` | Apps Script का `APP_KEY` और app की ⚙ key अलग हैं |
 | लिस्ट खाली आई | `लेबर सूची` के B column / `सूचियाँ` में नाम नहीं भरे |
+| `कोई Sheet नहीं मिली — SHEET_ID भरो` | standalone script है पर `SHEET_ID` खाली छोड़ दिया |
+| `Requested entity was not found` | `SHEET_ID` गलत है — Sheet के URL से दोबारा लो |
 | code बदला पर असर नहीं | Step "आगे code बदलो तो" — New version से deploy नहीं किया |

@@ -10,6 +10,13 @@
 // ── 1. यहाँ अपना password जैसा key डालो (खाली छोड़ोगे तो कोई key नहीं लगेगी) ──
 var APP_KEY = '';
 
+// ── 2. Sheet कौन सी? ──
+// Sheet के अंदर से (Extensions → Apps Script) बनाया है  → खाली छोड़ दो।
+// script.google.com से अलग project बनाया है (फ़ोन वाला रास्ता) → Sheet का ID यहाँ डालो।
+// ID = Sheet के URL में /d/ और /edit के बीच वाला लंबा हिस्सा:
+//   docs.google.com/spreadsheets/d/[[[ यही ID ]]]/edit
+var SHEET_ID = '';
+
 // Sheet के नाम — बदलना हो तो यहीं बदलो
 var SH_ENTRIES = 'एंट्री';
 var SH_LABOUR  = 'लेबर सूची';
@@ -34,7 +41,7 @@ function doPost(e) {
     }
 
     switch (body.action) {
-      case 'ping':  return json({ ok: true, sheet: SpreadsheetApp.getActive().getName() });
+      case 'ping':  return json({ ok: true, sheet: book().getName() });
       case 'lists': return json(getLists());
       case 'save':  return json(saveEntry(body));
       default:      return json({ ok: false, error: 'अनजान action: ' + body.action });
@@ -54,10 +61,19 @@ function json(obj) {
   return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
 }
 
+// जिस Sheet में लिखना है — SHEET_ID भरा हो तो वही, वरना जिसके अंदर यह script है
+function book() {
+  var id = String(SHEET_ID == null ? '' : SHEET_ID).trim();
+  if (id) return SpreadsheetApp.openById(id);
+  var active = SpreadsheetApp.getActive();
+  if (!active) throw new Error('कोई Sheet नहीं मिली — Code.gs में SHEET_ID भरो।');
+  return active;
+}
+
 // ───────────────────────────── लिस्ट (लेबर / सामान / कार्य प्रकार) ─────────────────────────────
 
 function getLists() {
-  var ss = SpreadsheetApp.getActive();
+  var ss = book();
   return {
     ok: true,
     labour: colValues(ss.getSheetByName(SH_LABOUR), 2),   // "लेबर सूची" का B column
@@ -159,7 +175,7 @@ function durationText(s, f) {
 
 /** Apps Script editor में एक बार चलाओ (▶ Run) — तीनों sheets बन जाएँगी। */
 function setupWorkbook() {
-  var ss = SpreadsheetApp.getActive();
+  var ss = book();
   ensureEntriesSheet();
 
   var lab = ss.getSheetByName(SH_LABOUR) || ss.insertSheet(SH_LABOUR);
@@ -180,7 +196,7 @@ function setupWorkbook() {
 }
 
 function ensureEntriesSheet() {
-  var ss = SpreadsheetApp.getActive();
+  var ss = book();
   var sh = ss.getSheetByName(SH_ENTRIES);
   if (!sh) sh = ss.insertSheet(SH_ENTRIES);
   if (sh.getLastRow() < 1) {
