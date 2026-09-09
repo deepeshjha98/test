@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
+  <meta name="theme-color" content="#1f4e78">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="JCM लोडिंग">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <title>JCM लोडिंग-अनलोडिंग</title>
+  <style>
+    :root { --blue: #1f4e78; --blue-d: #163a5a; --green: #2e7d32; --red: #c62828; --amber: #ef6c00;
+            --bg: #f2f4f7; --card: #fff; --line: #d8dde3; --text: #1d2430; --muted: #6b7480; }
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    html, body { margin: 0; height: 100%; }
+    body { font-family: -apple-system, "Segoe UI", Roboto, "Noto Sans Devanagari", "Noto Sans", Arial, sans-serif;
+           font-size: 16px; color: var(--text); background: var(--bg); overscroll-behavior-y: contain; }
+    header { position: sticky; top: 0; z-index: 5; background: var(--blue); color: #fff;
+             padding: calc(10px + env(safe-area-inset-top)) 16px 10px; display: flex; align-items: center; gap: 10px; }
+    header h1 { font-size: 17px; margin: 0; flex: 1; font-weight: 700; }
+    .net { font-size: 12px; padding: 4px 9px; border-radius: 12px; background: rgba(255,255,255,.18); }
+    .net.off { background: var(--amber); }
+    main { padding: 14px 14px calc(84px + env(safe-area-inset-bottom)); max-width: 560px; margin: 0 auto; }
+    section[hidden] { display: none; }
+    .card { background: var(--card); border-radius: 14px; padding: 14px; box-shadow: 0 1px 3px rgba(0,0,0,.08); margin-bottom: 12px; }
+    label { display: block; font-weight: 600; margin: 12px 0 6px; font-size: 14px; }
+    label:first-child { margin-top: 0; }
+    input, select { width: 100%; font-size: 16px; padding: 12px; border: 1px solid #b9c1cb; border-radius: 10px; background: #fff; color: var(--text); }
+    input:focus, select:focus { outline: 2px solid var(--blue); border-color: var(--blue); }
+    .row2 { display: flex; gap: 10px; }
+    .row2 > div { flex: 1; min-width: 0; }
+    .seg { display: flex; gap: 8px; }
+    .seg button { flex: 1; min-height: 46px; border: 1px solid #b9c1cb; background: #fff; border-radius: 10px; font-size: 15px; font-weight: 600; color: var(--text); }
+    .seg button.on { background: var(--blue); color: #fff; border-color: var(--blue); }
+    .chips { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 8px; }
+    .chip { border: 1px solid #b9c1cb; background: #fff; border-radius: 10px; padding: 11px 8px; text-align: center;
+            font-size: 15px; min-height: 46px; display: flex; align-items: center; justify-content: center; user-select: none; cursor: pointer; }
+    .chip.on { background: var(--green); color: #fff; border-color: var(--green); font-weight: 600; }
+    .chip.on::before { content: "✓ "; }
+    .hint { font-size: 13px; color: var(--muted); margin-top: 6px; }
+    .btn { width: 100%; margin-top: 14px; padding: 15px; font-size: 17px; font-weight: 700; color: #fff;
+           background: var(--green); border: 0; border-radius: 12px; cursor: pointer; }
+    .btn.blue { background: var(--blue); }
+    .btn.ghost { background: #fff; color: var(--blue); border: 1px solid var(--blue); font-weight: 600; }
+    .btn.danger { background: #fff; color: var(--red); border: 1px solid var(--red); font-weight: 600; }
+    .btn:disabled { opacity: .55; }
+    .btn.sm { width: auto; padding: 8px 12px; font-size: 14px; margin: 6px 6px 0 0; border-radius: 9px; }
+    .empty { color: var(--muted); text-align: center; padding: 24px 8px; }
+    .item { border-top: 1px solid var(--line); padding: 10px 0; }
+    .item:first-child { border-top: 0; padding-top: 0; }
+    .item .t { display: flex; justify-content: space-between; gap: 8px; font-weight: 600; }
+    .item .s { font-size: 14px; color: var(--muted); margin-top: 3px; }
+    .item .e { font-size: 14px; color: var(--red); margin-top: 4px; }
+    .st { font-size: 13px; font-weight: 700; padding: 2px 8px; border-radius: 10px; white-space: nowrap; }
+    .st.pending { background: #fff3e0; color: var(--amber); }
+    .st.sent { background: #e8f5e9; color: var(--green); }
+    .st.failed { background: #ffebee; color: var(--red); }
+    .summary { display: flex; gap: 8px; margin-bottom: 12px; }
+    .summary div { flex: 1; background: var(--card); border-radius: 12px; padding: 10px; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+    .summary b { display: block; font-size: 22px; }
+    .summary span { font-size: 12px; color: var(--muted); }
+    nav.tabs { position: fixed; left: 0; right: 0; bottom: 0; display: flex; background: #fff; border-top: 1px solid var(--line);
+               padding-bottom: env(safe-area-inset-bottom); z-index: 5; }
+    nav.tabs button { flex: 1; border: 0; background: none; padding: 8px 4px 6px; font-size: 12px; color: var(--muted); position: relative; }
+    nav.tabs button .ic { display: block; font-size: 22px; line-height: 1.1; }
+    nav.tabs button.on { color: var(--blue); font-weight: 700; }
+    .badge { position: absolute; top: 4px; right: 22%; background: var(--red); color: #fff; border-radius: 10px; font-size: 11px; padding: 1px 6px; font-weight: 700; }
+    .badge:empty { display: none; }
+    #toast { position: fixed; left: 50%; bottom: calc(76px + env(safe-area-inset-bottom)); transform: translateX(-50%);
+             background: #263238; color: #fff; padding: 11px 16px; border-radius: 10px; font-size: 15px; max-width: 92%;
+             opacity: 0; pointer-events: none; transition: opacity .2s; z-index: 9; }
+    #toast.show { opacity: 1; }
+    #toast.ok { background: var(--green); } #toast.err { background: var(--red); }
+    .kv { font-size: 13px; color: var(--muted); }
+    code { font-size: 13px; background: #eef1f5; padding: 1px 5px; border-radius: 5px; }
+  </style>
+</head>
+<body>
+<header>
+  <img src="icons/icon-192.png" alt="" width="28" height="28" style="border-radius:7px">
+  <h1 id="title">लोडिंग / अनलोडिंग</h1>
+  <span class="net" id="net">online</span>
+</header>
+
+<main>
+  <!-- ================= नई entry ================= -->
+  <section id="view-entry">
+    <div class="card">
+      <label>दिनांक</label>
+      <input type="date" id="date">
+
+      <label>कार्य प्रकार</label>
+      <div class="seg" id="types"></div>
+
+      <label>सामान का प्रकार</label>
+      <select id="goods"><option value="">-- चुनो --</option></select>
+
+      <div class="row2">
+        <div><label>स्टार्ट टाइम</label><input type="time" id="start"></div>
+        <div><label>फिनिश टाइम</label><input type="time" id="finish"></div>
+      </div>
+      <div class="hint" id="dur"></div>
+
+      <label>कुल बोरा</label>
+      <input type="number" id="bags" inputmode="numeric" pattern="[0-9]*" min="0" step="1" placeholder="जैसे 180">
+    </div>
+
+    <div class="card">
+      <label>लेबर (जो शामिल थे) — <span id="cnt">0</span> चुने</label>
+      <div class="chips" id="labour"></div>
+      <div class="hint" id="labourHint"></div>
+    </div>
+
+    <button class="btn" id="save">✔ Save करो</button>
+    <div class="hint" style="text-align:center;margin-top:8px">Save होते ही entry phone में सुरक्षित; network मिलते ही Google Sheet में जाती है।</div>
+  </section>
+
+  <!-- ================= सूची / sync ================= -->
+  <section id="view-list" hidden>
+    <div class="summary">
+      <div><b id="nPending">0</b><span>बाकी (pending)</span></div>
+      <div><b id="nFailed">0</b><span>अटकी (failed)</span></div>
+      <div><b id="nSent">0</b><span>Sheet में गईं</span></div>
+    </div>
+    <button class="btn blue" id="syncBtn" style="margin-top:0">☁ अभी sync करो</button>
+    <div class="card" style="margin-top:12px" id="items"></div>
+  </section>
+
+  <!-- ================= सेटिंग ================= -->
+  <section id="view-settings" hidden>
+    <div class="card">
+      <label>Apps Script Web App URL</label>
+      <input type="url" id="api" placeholder="https://script.google.com/macros/s/…/exec" autocapitalize="off" autocorrect="off" spellcheck="false">
+      <label>App key (Code.gs में APP_KEY जैसा; खाली रखा हो तो खाली)</label>
+      <input type="text" id="key" autocapitalize="off" autocorrect="off" spellcheck="false">
+      <button class="btn blue" id="saveSettings">सेटिंग save करो</button>
+      <button class="btn ghost" id="testBtn">🔌 Test करो (लिस्ट लाओ)</button>
+      <div class="hint" id="testOut"></div>
+    </div>
+    <div class="card">
+      <button class="btn ghost" id="refreshLists" style="margin-top:0">↻ लेबर/सामान लिस्ट refresh</button>
+      <div class="hint" id="listsInfo"></div>
+      <button class="btn blue" id="installBtn" hidden>📲 App install करो</button>
+      <div class="hint" id="installHint"></div>
+      <button class="btn danger" id="clearSent">भेजी हुई entries का इतिहास साफ़ करो</button>
+      <div class="kv" style="margin-top:10px">Version <span id="ver"></span> · pending/failed entries कभी अपने-आप नहीं हटतीं।</div>
+    </div>
+  </section>
+</main>
+
+<nav class="tabs">
+  <button data-view="entry" class="on"><span class="ic">➕</span>नई entry</button>
+  <button data-view="list"><span class="ic">📋</span>सूची<span class="badge" id="badge"></span></button>
+  <button data-view="settings"><span class="ic">⚙</span>सेटिंग</button>
+</nav>
+<div id="toast"></div>
+
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
