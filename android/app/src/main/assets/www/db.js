@@ -16,7 +16,8 @@
   var DB_NAME = 'jcm-loading';
   var DB_VERSION = 1;
   var STORE = 'kv';
-  var KEYS = ['jcm.api', 'jcm.key', 'jcm.lists', 'jcm.queue', 'jcm.draft'];
+  // localStorage से पुराना data उठाने के लिए (IndexedDB से तो सारी keys अपने-आप आती हैं)
+  var KEYS = ['jcm.api', 'jcm.key', 'jcm.lists', 'jcm.queue', 'jcm.draft', 'jcm.shift'];
 
   function idb() {
     return root.indexedDB || root.mozIndexedDB || root.webkitIndexedDB || null;
@@ -38,15 +39,19 @@
     });
   }
 
+  // जो कुछ भी store में पड़ा है, सब पढ़ो — किसी तय सूची पर भरोसा मत करो,
+  // वरना आगे कोई नई key जोड़ने पर वह चुपचाप पढ़ी ही नहीं जाएगी।
   function idbReadAll(db) {
     return new Promise(function (resolve, reject) {
       var out = {};
       var tx = db.transaction(STORE, 'readonly');
-      var st = tx.objectStore(STORE);
-      KEYS.forEach(function (k) {
-        var r = st.get(k);
-        r.onsuccess = function () { if (r.result !== undefined) out[k] = r.result; };
-      });
+      var cur = tx.objectStore(STORE).openCursor();
+      cur.onsuccess = function () {
+        var c = cur.result;
+        if (!c) return;
+        out[c.key] = c.value;
+        c.continue();
+      };
       tx.oncomplete = function () { resolve(out); };
       tx.onerror = function () { reject(tx.error || new Error('IndexedDB read fail')); };
       tx.onabort = function () { reject(tx.error || new Error('IndexedDB read abort')); };
@@ -114,7 +119,7 @@
             var rows = await idbReadAll(db);
             backend = 'indexeddb';
             var found = 0;
-            KEYS.forEach(function (k) { if (rows[k] != null) { mem[k] = rows[k]; found++; } });
+            Object.keys(rows).forEach(function (k) { if (rows[k] != null) { mem[k] = rows[k]; found++; } });
             if (!found) {
               // पहली बार: localStorage में पुराना data हो तो उठा लो
               var moved = 0;

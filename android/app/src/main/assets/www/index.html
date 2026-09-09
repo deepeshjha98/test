@@ -80,6 +80,23 @@
     textarea:focus { outline: 2px solid var(--blue); border-color: var(--blue); }
     textarea.mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 12px; }
     .warn { font-size: 13px; color: var(--red); margin-top: 6px; font-weight: 600; }
+    .rep { width: 100%; border-collapse: collapse; font-size: 14px; }
+    .rep th, .rep td { padding: 7px 4px; text-align: right; border-bottom: 1px solid var(--line); white-space: nowrap; }
+    .rep th { font-size: 12px; color: var(--muted); font-weight: 600; }
+    .rep th:first-child, .rep td:first-child { text-align: left; white-space: normal; word-break: break-word; }
+    .rep td.ot { color: var(--amber); font-weight: 600; }
+    .rep tr:last-child td { border-bottom: 0; }
+    .scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .chips2 { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+    .chips2 button { flex: 1; min-width: 84px; min-height: 40px; border: 1px solid #b9c1cb; background: #fff;
+                     border-radius: 10px; font-size: 14px; font-weight: 600; color: var(--text); }
+    .chips2 button.on { background: var(--blue); color: #fff; border-color: var(--blue); }
+    .big { display: flex; gap: 8px; margin-bottom: 12px; }
+    .big > div { flex: 1; background: var(--card); border-radius: 12px; padding: 12px 8px; text-align: center;
+                 box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+    .big b { display: block; font-size: 20px; line-height: 1.25; }
+    .big span { font-size: 12px; color: var(--muted); }
+    .big .w { color: var(--green); } .big .o { color: var(--amber); }
     .kv { font-size: 13px; color: var(--muted); }
     code { font-size: 13px; background: #eef1f5; padding: 1px 5px; border-radius: 5px; }
   </style>
@@ -135,6 +152,47 @@
     <div class="card" style="margin-top:12px" id="items"></div>
   </section>
 
+  <!-- ================= विश्लेषण ================= -->
+  <section id="view-report" hidden>
+    <div class="card">
+      <label style="margin-top:0">कब का हिसाब?</label>
+      <div class="chips2" id="repQuick">
+        <button data-range="today">आज</button>
+        <button data-range="month" class="on">इस महीने</button>
+        <button data-range="all">सब</button>
+      </div>
+      <div class="row2">
+        <div><label>से</label><input type="date" id="repFrom"></div>
+        <div><label>तक</label><input type="date" id="repTo"></div>
+      </div>
+      <div class="hint" id="repShift"></div>
+    </div>
+
+    <div class="big">
+      <div><b id="repTotal">0:00</b><span>कुल समय</span></div>
+      <div><b class="w" id="repWork">0:00</b><span>काम के घंटे</span></div>
+      <div><b class="o" id="repOt">0:00</b><span>ओवरटाइम</span></div>
+    </div>
+    <div class="card" id="repHead"></div>
+
+    <div class="card">
+      <label style="margin-top:0">लेबर-घंटे — किसने कितना काम/OT किया</label>
+      <div class="hint" style="margin-top:0">मज़दूरी और OT का हिसाब इसी से बनता है।</div>
+      <div class="scroll"><table class="rep" id="repLabour"></table></div>
+    </div>
+
+    <div class="card">
+      <label style="margin-top:0">दिन-वार</label>
+      <div class="scroll"><table class="rep" id="repDays"></table></div>
+    </div>
+
+    <div class="card">
+      <label style="margin-top:0">कार्य प्रकार / सामान</label>
+      <div class="scroll"><table class="rep" id="repTypes"></table></div>
+      <div class="scroll" style="margin-top:10px"><table class="rep" id="repGoods"></table></div>
+    </div>
+  </section>
+
   <!-- ================= सेटिंग ================= -->
   <section id="view-settings" hidden>
     <div class="card">
@@ -146,6 +204,17 @@
       <button class="btn ghost" id="testBtn">🔌 Test करो (लिस्ट लाओ)</button>
       <div class="hint" id="testOut"></div>
     </div>
+    <div class="card">
+      <label style="margin-top:0">मिल का काम का समय (शिफ्ट)</label>
+      <div class="hint" style="margin-top:0">इसके अंदर का समय "काम के घंटे", बाहर का "ओवरटाइम" गिना जाता है।</div>
+      <div class="row2">
+        <div><label>शुरू</label><input type="time" id="shStart"></div>
+        <div><label>ख़त्म</label><input type="time" id="shFinish"></div>
+      </div>
+      <button class="btn blue" id="saveShift">शिफ्ट save करो</button>
+      <div class="hint" id="shiftInfo"></div>
+    </div>
+
     <div class="card">
       <label>लोकल लिस्ट (बिना internet — हर लाइन में एक नाम)</label>
       <div class="hint" style="margin-top:0">Sheet न हो तो यहीं भर दो। App इन्हीं से चलेगी।</div>
@@ -197,6 +266,7 @@
 <nav class="tabs">
   <button data-view="entry" class="on"><span class="ic">➕</span>नई entry</button>
   <button data-view="list"><span class="ic">📋</span>सूची<span class="badge" id="badge"></span></button>
+  <button data-view="report"><span class="ic">📊</span>विश्लेषण</button>
   <button data-view="settings"><span class="ic">⚙</span>सेटिंग</button>
 </nav>
 <div id="toast"></div>

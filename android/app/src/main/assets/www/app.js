@@ -10,8 +10,9 @@
 (function (root) {
   'use strict';
 
-  const APP_VERSION = '1.1.0';
-  const K = { api: 'jcm.api', key: 'jcm.key', lists: 'jcm.lists', queue: 'jcm.queue', draft: 'jcm.draft' };
+  const APP_VERSION = '1.2.0';
+  const K = { api: 'jcm.api', key: 'jcm.key', lists: 'jcm.lists', queue: 'jcm.queue', draft: 'jcm.draft', shift: 'jcm.shift' };
+  const DEFAULT_SHIFT = { start: '08:30', finish: '18:30' };   // मिल का सामान्य समय; ⚙ सेटिंग से बदला जा सकता है
   const MAX_SENT_HISTORY = 300;
   const REQUEST_TIMEOUT_MS = 25000;
 
@@ -29,6 +30,46 @@
     const m = (toMin(f) - toMin(s) + 1440) % 1440;
     return Math.floor(m / 60) + ' घंटे ' + (m % 60) + ' मिनट';
   }
+  // ── काम के घंटे बनाम ओवरटाइम ──────────────────────────────────────────────
+  // सोच: समय को "दिन के मिनट" (0-1439) में नहीं, एक लगातार timeline पर रखो।
+  // entry = [s, s+total]. शिफ्ट की खिड़की को पिछले/इसी/अगले दिन — तीनों के लिए
+  // बिछा दो, फिर हर खिड़की से कटान (overlap) जोड़ लो। इससे आधी रात पार वाली
+  // entry (22:00→02:15) और रात भर वाली (20:00→09:00) अपने-आप सही बँटती हैं।
+
+  function hhmm(min) {   // 270 → "4:30"  (बड़े जोड़ के लिए, जैसे 126:45)
+    min = Math.max(0, Math.round(min || 0));
+    return Math.floor(min / 60) + ':' + pad2(min % 60);
+  }
+
+  // एक दिन की शिफ्ट → timeline पर तीन दिन की खिड़कियाँ
+  function shiftWindows(ws, wf) {
+    const crosses = wf <= ws;                    // रात की पाली (जैसे 20:00–06:00)
+    const out = [];
+    for (let k = -1; k <= 1; k++) out.push([ws + 1440 * k, (crosses ? wf + 1440 : wf) + 1440 * k]);
+    return out;                                  // खिड़कियाँ कभी आपस में नहीं भिड़तीं → दोहरी गिनती नहीं
+  }
+
+  // एक entry का बँटवारा। total वही रहता है जो durationText गिनता है।
+  function splitShift(start, finish, shift) {
+    const T = /^\d{2}:\d{2}$/;
+    const out = { total: 0, work: 0, ot: 0 };
+    if (!T.test(start || '') || !T.test(finish || '')) return out;
+    const sh = shift || DEFAULT_SHIFT;
+    if (!T.test(sh.start || '') || !T.test(sh.finish || '')) return out;
+
+    const s = toMin(start);
+    out.total = (toMin(finish) - s + 1440) % 1440;
+    const e = s + out.total;
+
+    let work = 0;
+    shiftWindows(toMin(sh.start), toMin(sh.finish)).forEach(function (w) {
+      work += Math.max(0, Math.min(e, w[1]) - Math.max(s, w[0]));
+    });
+    out.work = Math.min(work, out.total);        // हिसाब कभी total से ऊपर न जाए
+    out.ot = out.total - out.work;
+    return out;
+  }
+
   function fmtDate(iso) {   // 2026-09-08 → 08-09-2026
     const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || ''); return m ? m[3] + '-' + m[2] + '-' + m[1] : (iso || '');
   }
@@ -197,6 +238,72 @@
       },
       clearSent: function () { set(K.queue, core.queue().filter(function (i) { return i.status !== 'sent'; })); },
 
+      // ---------- शिफ्ट का समय + काम/ओवरटाइम की रिपोर्ट ----------
+      getShift: function () {
+        const v = get(K.shift, null);
+        return (v && /^\d{2}:\d{2}$/.test(v.start || '') && /^\d{2}:\d{2}$/.test(v.finish || '')) ? v : DEFAULT_SHIFT;
+      },
+      setShift: function (start, finish) {
+        const T = /^\d{2}:\d{2}$/;
+        if (!T.test(start || '') || !T.test(finish || '')) throw new Error('शिफ्ट का समय HH:MM में भरो।');
+        if (start === finish) throw new Error('शुरू और ख़त्म का समय एक जैसा नहीं हो सकता।');
+        const v = { start: start, finish: finish };
+        set(K.shift, v);
+        return v;
+      },
+
+      // एक entry का बँटवारा (UI के लिए) — मौजूदा शिफ्ट के हिसाब से
+      split: function (start, finish) { return splitShift(start, finish, core.getShift()); },
+
+      /* तारीख़ की सीमा में पूरी रिपोर्ट।
+         समय दो तरह से गिना जाता है:
+           घड़ी का समय  = entry कितनी देर चली (चाहे 1 लेबर हो या 10)
+           लेबर-घंटे    = वही समय × उतने लेबर  (मज़दूरी/OT का असली आधार)  */
+      report: function (from, to) {
+        const shift = core.getShift();
+        const items = core.queue().filter(function (it) {
+          const d = it.entry && it.entry.date;
+          if (!d) return false;
+          if (from && d < from) return false;
+          if (to && d > to) return false;
+          return true;
+        });
+
+        const r = {
+          shift: shift, from: from || '', to: to || '', count: items.length, bags: 0,
+          totalMin: 0, workMin: 0, otMin: 0,           // घड़ी का समय
+          manMin: 0, manWorkMin: 0, manOtMin: 0,        // लेबर-घंटे
+          labour: [], days: [], types: [], goods: []
+        };
+        const byName = {}, byDay = {}, byType = {}, byGoods = {};
+        function bucket(map, key, sp, n) {
+          const b = map[key] || (map[key] = { name: key, count: 0, totalMin: 0, workMin: 0, otMin: 0, bags: 0 });
+          b.count++; b.totalMin += sp.total * n; b.workMin += sp.work * n; b.otMin += sp.ot * n;
+          return b;
+        }
+
+        items.forEach(function (it) {
+          const e = it.entry;
+          const sp = splitShift(e.start, e.finish, shift);
+          const n = (e.labour || []).length;
+          r.bags += Number(e.bags) || 0;
+          r.totalMin += sp.total; r.workMin += sp.work; r.otMin += sp.ot;
+          r.manMin += sp.total * n; r.manWorkMin += sp.work * n; r.manOtMin += sp.ot * n;
+
+          (e.labour || []).forEach(function (nm) { bucket(byName, nm, sp, 1); });   // हर लेबर को पूरा समय
+          bucket(byDay, e.date, sp, 1).bags += Number(e.bags) || 0;
+          bucket(byType, e.type, sp, 1).bags += Number(e.bags) || 0;
+          bucket(byGoods, e.goods, sp, 1).bags += Number(e.bags) || 0;
+        });
+
+        const byOt = function (a, b) { return (b.otMin - a.otMin) || (b.totalMin - a.totalMin) || a.name.localeCompare(b.name); };
+        r.labour = Object.keys(byName).map(function (k) { return byName[k]; }).sort(byOt);
+        r.types  = Object.keys(byType).map(function (k) { return byType[k]; }).sort(byOt);
+        r.goods  = Object.keys(byGoods).map(function (k) { return byGoods[k]; }).sort(byOt);
+        r.days   = Object.keys(byDay).map(function (k) { return byDay[k]; }).sort(function (a, b) { return b.name.localeCompare(a.name); });
+        return r;
+      },
+
       // ---------- सिर्फ़-फ़ोन (offline) मोड ----------
       // कोई Web App URL सेट नहीं = app पूरी तरह local database पर चलती है।
       localOnly: function () { return !core.getApi(); },
@@ -216,12 +323,19 @@
 
       // सारी entries CSV में — Excel/Sheet में paste या WhatsApp पर भेजने के लिए
       toCSV: function () {
-        const head = ['क्रम', 'दिनांक', 'कार्य प्रकार', 'सामान', 'स्टार्ट', 'फिनिश', 'कुल समय', 'कुल बोरा',
-                      'लेबर संख्या', 'लेबर', 'स्थिति', 'बनाई गई', 'Sheet row'];
+        const sh = core.getShift();
+        const head = ['क्रम', 'दिनांक', 'कार्य प्रकार', 'सामान', 'स्टार्ट', 'फिनिश', 'कुल समय',
+                      'काम के घंटे', 'ओवरटाइम', 'कुल बोरा',
+                      'लेबर संख्या', 'लेबर', 'लेबर-घंटे (काम)', 'लेबर-घंटे (OT)',
+                      'स्थिति', 'बनाई गई', 'Sheet row'];
         const rows = core.queue().slice().reverse().map(function (it, i) {
           const e = it.entry;
-          return [i + 1, e.date, e.type, e.goods, e.start, e.finish, durationText(e.start, e.finish), e.bags,
-                  e.labour.length, e.labour.join(', '), statusText(it), it.createdAt,
+          const sp = splitShift(e.start, e.finish, sh);
+          const n = e.labour.length;
+          return [i + 1, e.date, e.type, e.goods, e.start, e.finish, hhmm(sp.total),
+                  hhmm(sp.work), hhmm(sp.ot), e.bags,
+                  n, e.labour.join(', '), hhmm(sp.work * n), hhmm(sp.ot * n),
+                  statusText(it), it.createdAt,
                   (it.result && it.result.serial != null) ? it.result.serial : ''];
         });
         return [head].concat(rows).map(function (r) {
@@ -264,7 +378,7 @@
     return core;
   }
 
-  const api = { createCore: createCore, validate: validate, uuid: uuid, todayLocal: todayLocal, durationText: durationText, fmtDate: fmtDate, cleanNames: cleanNames, APP_VERSION: APP_VERSION };
+  const api = { createCore: createCore, validate: validate, uuid: uuid, todayLocal: todayLocal, durationText: durationText, fmtDate: fmtDate, cleanNames: cleanNames, splitShift: splitShift, hhmm: hhmm, DEFAULT_SHIFT: DEFAULT_SHIFT, APP_VERSION: APP_VERSION };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.JCM = api;
 
@@ -324,7 +438,13 @@
       const on = !!selLabour[ch[j].textContent]; ch[j].className = on ? 'chip on' : 'chip'; if (on) n++;
     }
     $('cnt').textContent = n;
-    $('dur').textContent = (function () { const t = durationText($('start').value, $('finish').value); return t ? 'कुल समय: ' + t : ''; })();
+    $('dur').textContent = (function () {
+      const a = $('start').value, b = $('finish').value;
+      const t = durationText(a, b);
+      if (!t) return '';
+      const sp = core.split(a, b);
+      return 'कुल समय: ' + t + (sp.ot ? '  ·  काम ' + hhmm(sp.work) + ' + ओवरटाइम ' + hhmm(sp.ot) : '  ·  पूरा काम के घंटों में');
+    })();
   }
   function formEntry() {
     return {
@@ -367,6 +487,8 @@
       d.innerHTML =
         '<div class="t"><span>' + esc(fmtDate(e.date)) + ' · ' + esc(e.type) + ' · ' + esc(e.goods) + '</span><span class="st ' + it.status + '">' + esc(st) + '</span></div>' +
         '<div class="s">' + esc(e.start) + '–' + esc(e.finish) + ' · ' + esc(e.bags) + ' बोरा · ' + e.labour.length + ' लेबर: ' + esc(e.labour.join(', ')) + '</div>' +
+        (function () { const sp = core.split(e.start, e.finish);
+          return '<div class="s">काम ' + hhmm(sp.work) + (sp.ot ? ' · <b style="color:#ef6c00">ओवरटाइम ' + hhmm(sp.ot) + '</b>' : '') + '</div>'; })() +
         (it.error ? '<div class="e">' + esc(it.error) + '</div>' : '');
       if (it.status !== 'sent') {
         const wrap = document.createElement('div');
@@ -409,11 +531,12 @@
   // ---- views
   function showView(v) {
     view = v;
-    ['entry', 'list', 'settings'].forEach(function (x) { $('view-' + x).hidden = (x !== v); });
+    ['entry', 'list', 'report', 'settings'].forEach(function (x) { $('view-' + x).hidden = (x !== v); });
     const tabs = document.querySelectorAll('nav.tabs button');
     tabs.forEach(function (b) { b.className = b.getAttribute('data-view') === v ? 'on' : ''; });
     if (v === 'list') renderList();
-    if (v === 'settings') { $('api').value = core.getApi(); $('key').value = core.getKey(); fillLocalLists(); listsInfo(); dbInfo(); }
+    if (v === 'report') renderReport();
+    if (v === 'settings') { $('api').value = core.getApi(); $('key').value = core.getKey(); shiftInfo(); fillLocalLists(); listsInfo(); dbInfo(); }
     window.scrollTo(0, 0);
   }
   function listsInfo() {
@@ -431,6 +554,65 @@
     $('llTypes').value = (l.types || []).join('\n');
     $('llGoods').value = (l.goods || []).join('\n');
     $('llLabour').value = (l.labour || []).join('\n');
+  }
+
+  // ---- विश्लेषण (काम के घंटे बनाम ओवरटाइम)
+  let repRange = 'month';
+
+  function monthStart(d) { return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-01'; }
+
+  function applyQuickRange() {
+    const now = new Date();
+    if (repRange === 'today') { $('repFrom').value = todayLocal(now); $('repTo').value = todayLocal(now); }
+    else if (repRange === 'month') { $('repFrom').value = monthStart(now); $('repTo').value = todayLocal(now); }
+    else { $('repFrom').value = ''; $('repTo').value = ''; }
+    document.querySelectorAll('#repQuick button').forEach(function (b) {
+      b.className = b.getAttribute('data-range') === repRange ? 'on' : '';
+    });
+  }
+
+  function table(el, cols, rows, totalRow) {
+    let h = '<thead><tr>' + cols.map(function (c) { return '<th>' + esc(c) + '</th>'; }).join('') + '</tr></thead><tbody>';
+    if (!rows.length) h += '<tr><td colspan="' + cols.length + '" style="text-align:center;color:#6b7480">कुछ नहीं</td></tr>';
+    rows.forEach(function (r) {
+      h += '<tr>' + r.map(function (c, i) {
+        return '<td' + (i === 2 ? ' class="ot"' : '') + '>' + esc(c) + '</td>';
+      }).join('') + '</tr>';
+    });
+    if (totalRow && rows.length) {
+      h += '<tr>' + totalRow.map(function (c, i) {
+        return '<td style="font-weight:700' + (i === 2 ? ';color:#ef6c00' : '') + '">' + esc(c) + '</td>';
+      }).join('') + '</tr>';
+    }
+    el.innerHTML = h + '</tbody>';
+  }
+
+  function renderReport() {
+    const r = core.report($('repFrom').value, $('repTo').value);
+    const sh = r.shift;
+    $('repShift').textContent = 'शिफ्ट: ' + sh.start + ' से ' + sh.finish + ' — इसके बाहर का सारा समय ओवरटाइम। (⚙ सेटिंग में बदल सकते हो)';
+
+    $('repTotal').textContent = hhmm(r.totalMin);
+    $('repWork').textContent = hhmm(r.workMin);
+    $('repOt').textContent = hhmm(r.otMin);
+
+    const pct = r.totalMin ? Math.round(r.otMin * 100 / r.totalMin) : 0;
+    $('repHead').innerHTML = r.count
+      ? '<div class="kv">' + r.count + ' entry · ' + r.bags + ' बोरा · कुल समय का <b>' + pct + '%</b> ओवरटाइम</div>' +
+        '<div class="kv" style="margin-top:6px">लेबर-घंटे: काम <b>' + hhmm(r.manWorkMin) + '</b> · ओवरटाइम <b style="color:#ef6c00">' + hhmm(r.manOtMin) + '</b> · कुल ' + hhmm(r.manMin) + '</div>'
+      : '<div class="empty">इस अवधि में कोई entry नहीं।</div>';
+
+    const cols = ['', 'काम', 'ओवरटाइम', 'कुल'];
+    const rowsOf = function (arr) {
+      return arr.map(function (b) { return [b.name, hhmm(b.workMin), hhmm(b.otMin), hhmm(b.totalMin)]; });
+    };
+    table($('repLabour'), ['लेबर', 'काम', 'ओवरटाइम', 'कुल'], rowsOf(r.labour),
+      ['कुल (लेबर-घंटे)', hhmm(r.manWorkMin), hhmm(r.manOtMin), hhmm(r.manMin)]);
+    table($('repDays'), ['दिनांक', 'काम', 'ओवरटाइम', 'कुल'],
+      r.days.map(function (b) { return [fmtDate(b.name), hhmm(b.workMin), hhmm(b.otMin), hhmm(b.totalMin)]; }),
+      ['कुल', hhmm(r.workMin), hhmm(r.otMin), hhmm(r.totalMin)]);
+    table($('repTypes'), ['कार्य प्रकार', 'काम', 'ओवरटाइम', 'कुल'], rowsOf(r.types), null);
+    table($('repGoods'), ['सामान', 'काम', 'ओवरटाइम', 'कुल'], rowsOf(r.goods), null);
   }
 
   // ---- मोड के हिसाब से hint
@@ -513,6 +695,33 @@
   };
   $('clearSent').onclick = function () { if (confirm('सिर्फ भेजी हुई entries का local इतिहास हटेगा (Sheet पर असर नहीं)। ठीक?')) { core.clearSent(); renderList(); toast('इतिहास साफ़', 'ok'); } };
 
+  // ---- विश्लेषण के बटन
+  document.querySelectorAll('#repQuick button').forEach(function (b) {
+    b.onclick = function () { repRange = b.getAttribute('data-range'); applyQuickRange(); renderReport(); };
+  });
+  ['repFrom', 'repTo'].forEach(function (id) {
+    $(id).addEventListener('change', function () {
+      repRange = '';                                  // हाथ से तारीख़ चुनी → कोई chip चुना हुआ नहीं
+      document.querySelectorAll('#repQuick button').forEach(function (b) { b.className = ''; });
+      renderReport();
+    });
+  });
+
+  // ---- शिफ्ट का समय
+  function shiftInfo() {
+    const sh = core.getShift();
+    $('shStart').value = sh.start; $('shFinish').value = sh.finish;
+    const w = (toMin(sh.finish) - toMin(sh.start) + 1440) % 1440;
+    $('shiftInfo').textContent = 'अभी: ' + sh.start + ' – ' + sh.finish + ' (' + hhmm(w) + ' घंटे)। इसके बाहर का समय ओवरटाइम।';
+  }
+  $('saveShift').onclick = function () {
+    try {
+      core.setShift($('shStart').value, $('shFinish').value);
+      shiftInfo(); renderSel(); renderList();
+      toast('✔ शिफ्ट का समय save हुआ', 'ok');
+    } catch (e) { toast(e.message, 'err', 4000); }
+  };
+
   // ---- लोकल लिस्ट (बिना internet)
   $('saveLists').onclick = function () {
     try {
@@ -569,6 +778,7 @@
     if (!inApk && 'serviceWorker' in navigator) { navigator.serviceWorker.register('./sw.js').catch(function () { }); }
     setNet();
     modeHints();
+    applyQuickRange();
     $('installHint').textContent = inApk ? 'यह installed app है।' : /iPhone|iPad/.test(navigator.userAgent) ? 'iPhone: Safari में Share → "Add to Home Screen"।' : 'Android/Chrome: menu → "Add to Home screen" / "Install app"।';
     $('ver').textContent = APP_VERSION;
     $('date').value = todayLocal();
