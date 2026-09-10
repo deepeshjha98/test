@@ -10,7 +10,7 @@
 (function (root) {
   'use strict';
 
-  const APP_VERSION = '1.2.0';
+  const APP_VERSION = '1.3.0';
   const K = { api: 'jcm.api', key: 'jcm.key', lists: 'jcm.lists', queue: 'jcm.queue', draft: 'jcm.draft', shift: 'jcm.shift' };
   const DEFAULT_SHIFT = { start: '08:30', finish: '18:30' };   // मिल का सामान्य समय; ⚙ सेटिंग से बदला जा सकता है
   const MAX_SENT_HISTORY = 300;
@@ -304,6 +304,74 @@
         return r;
       },
 
+      /* उत्पादकता: एक बोरा पर कितनी मेहनत — काम के घंटों में बनाम ओवरटाइम में?
+
+         माप = मज़दूर-मिनट प्रति बोरा  (समय × कितने लेबर लगे) ÷ बोरे
+         कम = बेहतर। लेबर की गिनती इसलिए जोड़ी कि 2 लेबर से 1 घंटा और
+         4 लेबर से 1 घंटा — मेहनत बराबर नहीं है।
+
+         ज़रूरी: entry में यह नहीं लिखा होता कि कितने बोरे 18:30 से पहले उठे और
+         कितने बाद में। इसलिए मिली-जुली entries (जो खिड़की के आर-पार फैली हैं)
+         को सीधी तुलना से बाहर रखा जाता है — वरना "बोरे बराबर रफ़्तार से उठे"
+         मान लेना पड़ता, और तब दोनों रफ़्तारें अपने-आप बराबर निकलतीं (गोल हिसाब)।
+         उन्हें अलग से least squares में जोड़ा जाता है — नीचे fit देखो।             */
+      productivity: function (from, to) {
+        const shift = core.getShift();
+        const items = core.queue().filter(function (it) {
+          const d = it.entry && it.entry.date;
+          if (!d) return false;
+          if (from && d < from) return false;
+          if (to && d > to) return false;
+          return (Number(it.entry.bags) || 0) > 0 && (it.entry.labour || []).length > 0;
+        });
+
+        const blank = function () { return { entries: 0, bags: 0, min: 0, labourMin: 0, perBag: null, bagsPerLabourHour: null }; };
+        const B = { work: blank(), ot: blank(), mixed: blank() };
+        // least squares के जोड़ (मिली-जुली entries भी शामिल)
+        let sAA = 0, sCC = 0, sAC = 0, sAB = 0, sCB = 0, nFit = 0;
+
+        items.forEach(function (it) {
+          const e = it.entry;
+          const sp = splitShift(e.start, e.finish, shift);
+          if (!sp.total) return;
+          const n = e.labour.length, bags = Number(e.bags) || 0;
+          const b = sp.ot === 0 ? B.work : sp.work === 0 ? B.ot : B.mixed;
+          b.entries++; b.bags += bags; b.min += sp.total; b.labourMin += sp.total * n;
+
+          const A = n * sp.work, C = n * sp.ot;      // मज़दूर-मिनट, दोनों हिस्सों में
+          sAA += A * A; sCC += C * C; sAC += A * C; sAB += A * bags; sCB += C * bags; nFit++;
+        });
+
+        ['work', 'ot', 'mixed'].forEach(function (k) {
+          const b = B[k];
+          if (b.bags > 0) {
+            b.perBag = b.labourMin / b.bags;                    // मज़दूर-मिनट प्रति बोरा
+            b.bagsPerLabourHour = b.bags / (b.labourMin / 60);  // बोरा प्रति मज़दूर-घंटा
+          }
+        });
+
+        // सीधी तुलना — सिर्फ़ साफ़ ढेरों से
+        const cmp = { ok: false, diffPct: 0, verdict: '', enough: false };
+        if (B.work.perBag && B.ot.perBag) {
+          cmp.ok = true;
+          cmp.diffPct = Math.round((B.ot.perBag - B.work.perBag) * 100 / B.work.perBag);
+          cmp.verdict = Math.abs(cmp.diffPct) < 5 ? 'same' : (cmp.diffPct > 0 ? 'ot-slower' : 'ot-faster');
+          cmp.enough = B.work.entries >= 5 && B.ot.entries >= 5;   // इससे कम पर नतीजा डगमगाता है
+        }
+
+        /* least squares: बोरे = x·(मज़दूर-मिनट काम में) + y·(मज़दूर-मिनट OT में)
+           x, y = बोरा प्रति मज़दूर-मिनट। मिली-जुली entries भी काम आती हैं।       */
+        const fit = { ok: false, workPerBag: 0, otPerBag: 0, n: nFit };
+        const det = sAA * sCC - sAC * sAC;
+        if (nFit >= 4 && det > 1e-6 && sAA > 0 && sCC > 0) {
+          const x = (sCC * sAB - sAC * sCB) / det;
+          const y = (sAA * sCB - sAC * sAB) / det;
+          if (x > 1e-9 && y > 1e-9) { fit.ok = true; fit.workPerBag = 1 / x; fit.otPerBag = 1 / y; }
+        }
+
+        return { shift: shift, buckets: B, compare: cmp, fit: fit, total: items.length };
+      },
+
       // ---------- सिर्फ़-फ़ोन (offline) मोड ----------
       // कोई Web App URL सेट नहीं = app पूरी तरह local database पर चलती है।
       localOnly: function () { return !core.getApi(); },
@@ -587,22 +655,74 @@
     el.innerHTML = h + '</tbody>';
   }
 
-  function renderReport() {
-    const r = core.report($('repFrom').value, $('repTo').value);
-    const sh = r.shift;
-    $('repShift').textContent = 'शिफ्ट: ' + sh.start + ' से ' + sh.finish + ' — इसके बाहर का सारा समय ओवरटाइम। (⚙ सेटिंग में बदल सकते हो)';
+  function num(v, d) { return (v == null) ? '—' : v.toFixed(d === undefined ? 2 : d); }
 
+  function renderReport() {
+    const P = core.productivity($('repFrom').value, $('repTo').value);
+    const W = P.buckets.work, O = P.buckets.ot, M = P.buckets.mixed;
+    $('repShift').textContent = 'शिफ्ट: ' + P.shift.start + ' – ' + P.shift.finish + ' (⚙ में बदल सकते हो)';
+
+    // ── मुख्य जवाब
+    let v = '';
+    if (!P.total) {
+      v = '<div class="empty">इस अवधि में बोरे वाली कोई entry नहीं।</div>';
+    } else if (!P.compare.ok) {
+      const missing = !O.perBag ? 'ओवरटाइम' : 'काम के घंटों';
+      v = '<div class="vd"><div class="say">तुलना अभी नहीं हो सकती</div>' +
+          '<div class="sub">पूरी तरह ' + missing + ' में हुई कोई entry नहीं मिली। दोनों तरह की entries आने पर यहाँ जवाब दिखेगा।</div></div>';
+    } else {
+      const d = P.compare.diffPct, k = P.compare.verdict;
+      const cls = k === 'ot-slower' ? 'slow' : k === 'ot-faster' ? 'fast' : 'same';
+      const big = k === 'same' ? 'लगभग बराबर' : (d > 0 ? '+' : '') + d + '%';
+      const say = k === 'ot-slower' ? 'ओवरटाइम में हर बोरा पर <b>' + d + '% ज़्यादा</b> मेहनत लगती है'
+                : k === 'ot-faster' ? 'ओवरटाइम में हर बोरा पर <b>' + Math.abs(d) + '% कम</b> मेहनत लगती है'
+                : 'काम के घंटों और ओवरटाइम में रफ़्तार लगभग एक जैसी है';
+      v = '<div class="vd"><div class="num ' + cls + '">' + big + '</div><div class="say">' + say + '</div>' +
+          '<div class="sub">काम के घंटे ' + num(W.perBag) + ' मज़दूर-मिनट/बोरा · ओवरटाइम ' + num(O.perBag) + '</div></div>';
+      if (!P.compare.enough) {
+        v += '<div class="warn2">⚠ अभी सिर्फ़ ' + W.entries + ' + ' + O.entries +
+             ' साफ़ entries हैं — नतीजा शुरुआती है। दोनों तरफ़ 5+ entries जमा होने पर भरोसा करें।</div>';
+      }
+    }
+    $('verdict').innerHTML = v;
+
+    // ── आमने-सामने
+    const col = function (b) {
+      return [b.entries || 0, b.bags || 0, hhmm(b.labourMin), num(b.perBag), num(b.bagsPerLabourHour, 1)];
+    };
+    const cw = col(W), co = col(O);
+    const labels = ['entries', 'कुल बोरा', 'मज़दूर-घंटे', 'मज़दूर-मिनट / बोरा', 'बोरा / मज़दूर-घंटा'];
+    let h = '<thead><tr><th></th><th>काम के घंटे</th><th>ओवरटाइम</th></tr></thead><tbody>';
+    labels.forEach(function (lb, i) {
+      const hot = (i === 3 || i === 4);
+      h += '<tr><td>' + esc(lb) + '</td>' +
+           '<td' + (hot ? ' style="font-weight:700"' : '') + '>' + esc(cw[i]) + '</td>' +
+           '<td' + (hot ? ' style="font-weight:700;color:#ef6c00"' : '') + '>' + esc(co[i]) + '</td></tr>';
+    });
+    $('repCmp').innerHTML = h + '</tbody>';
+
+    // ── मिली-जुली + least squares
+    let mx = '';
+    if (M.entries) {
+      mx = M.entries + ' entries शिफ्ट के आर-पार फैली हैं (' + M.bags + ' बोरा) — इनमें यह पता नहीं कि ' +
+           'कौन सा बोरा किस तरफ़ उठा, इसलिए ऊपर की सीधी तुलना से बाहर रखी हैं।';
+    }
+    if (P.fit.ok) {
+      mx += (mx ? ' ' : '') + 'सबको (मिली-जुली समेत) एक साथ हल करने पर: काम ' + num(P.fit.workPerBag) +
+            ' · ओवरटाइम ' + num(P.fit.otPerBag) + ' मज़दूर-मिनट/बोरा।';
+    }
+    $('repMixed').textContent = mx;
+
+    // ── और विवरण
+    const r = core.report($('repFrom').value, $('repTo').value);
     $('repTotal').textContent = hhmm(r.totalMin);
     $('repWork').textContent = hhmm(r.workMin);
     $('repOt').textContent = hhmm(r.otMin);
-
     const pct = r.totalMin ? Math.round(r.otMin * 100 / r.totalMin) : 0;
     $('repHead').innerHTML = r.count
-      ? '<div class="kv">' + r.count + ' entry · ' + r.bags + ' बोरा · कुल समय का <b>' + pct + '%</b> ओवरटाइम</div>' +
-        '<div class="kv" style="margin-top:6px">लेबर-घंटे: काम <b>' + hhmm(r.manWorkMin) + '</b> · ओवरटाइम <b style="color:#ef6c00">' + hhmm(r.manOtMin) + '</b> · कुल ' + hhmm(r.manMin) + '</div>'
-      : '<div class="empty">इस अवधि में कोई entry नहीं।</div>';
+      ? r.count + ' entry · ' + r.bags + ' बोरा · कुल समय का <b>' + pct + '%</b> ओवरटाइम · लेबर-घंटे ' + hhmm(r.manMin)
+      : 'कोई entry नहीं।';
 
-    const cols = ['', 'काम', 'ओवरटाइम', 'कुल'];
     const rowsOf = function (arr) {
       return arr.map(function (b) { return [b.name, hhmm(b.workMin), hhmm(b.otMin), hhmm(b.totalMin)]; });
     };
@@ -696,6 +816,11 @@
   $('clearSent').onclick = function () { if (confirm('सिर्फ भेजी हुई entries का local इतिहास हटेगा (Sheet पर असर नहीं)। ठीक?')) { core.clearSent(); renderList(); toast('इतिहास साफ़', 'ok'); } };
 
   // ---- विश्लेषण के बटन
+  $('moreBtn').onclick = function () {
+    const box = $('moreBox');
+    box.hidden = !box.hidden;
+    $('moreBtn').textContent = box.hidden ? 'और विवरण ▾' : 'विवरण छिपाओ ▴';
+  };
   document.querySelectorAll('#repQuick button').forEach(function (b) {
     b.onclick = function () { repRange = b.getAttribute('data-range'); applyQuickRange(); renderReport(); };
   });

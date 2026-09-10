@@ -80,6 +80,12 @@
     textarea:focus { outline: 2px solid var(--blue); border-color: var(--blue); }
     textarea.mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 12px; }
     .warn { font-size: 13px; color: var(--red); margin-top: 6px; font-weight: 600; }
+    .vd { text-align: center; padding: 4px 0 2px; }
+    .vd .num { font-size: 34px; font-weight: 800; line-height: 1.1; }
+    .vd .num.slow { color: var(--red); } .vd .num.fast { color: var(--green); } .vd .num.same { color: var(--blue); }
+    .vd .say { font-size: 15px; margin-top: 6px; }
+    .vd .sub { font-size: 13px; color: var(--muted); margin-top: 8px; }
+    .warn2 { font-size: 13px; color: var(--amber); font-weight: 600; margin-top: 10px; }
     .rep { width: 100%; border-collapse: collapse; font-size: 14px; }
     .rep th, .rep td { padding: 7px 4px; text-align: right; border-bottom: 1px solid var(--line); white-space: nowrap; }
     .rep th { font-size: 12px; color: var(--muted); font-weight: 600; }
@@ -168,28 +174,35 @@
       <div class="hint" id="repShift"></div>
     </div>
 
-    <div class="big">
-      <div><b id="repTotal">0:00</b><span>कुल समय</span></div>
-      <div><b class="w" id="repWork">0:00</b><span>काम के घंटे</span></div>
-      <div><b class="o" id="repOt">0:00</b><span>ओवरटाइम</span></div>
-    </div>
-    <div class="card" id="repHead"></div>
+    <div class="card" id="verdict"></div>
 
     <div class="card">
-      <label style="margin-top:0">लेबर-घंटे — किसने कितना काम/OT किया</label>
-      <div class="hint" style="margin-top:0">मज़दूरी और OT का हिसाब इसी से बनता है।</div>
-      <div class="scroll"><table class="rep" id="repLabour"></table></div>
+      <label style="margin-top:0">एक बोरा पर कितनी मेहनत</label>
+      <div class="hint" style="margin-top:0">मज़दूर-मिनट = समय × कितने लेबर लगे। कम = बेहतर।</div>
+      <div class="scroll"><table class="rep" id="repCmp"></table></div>
+      <div class="hint" id="repMixed"></div>
     </div>
 
     <div class="card">
-      <label style="margin-top:0">दिन-वार</label>
-      <div class="scroll"><table class="rep" id="repDays"></table></div>
-    </div>
+      <button class="btn ghost" id="moreBtn" style="margin-top:0">और विवरण ▾</button>
+      <div id="moreBox" hidden>
+        <div class="big" style="margin-top:12px">
+          <div><b id="repTotal">0:00</b><span>कुल समय</span></div>
+          <div><b class="w" id="repWork">0:00</b><span>काम के घंटे</span></div>
+          <div><b class="o" id="repOt">0:00</b><span>ओवरटाइम</span></div>
+        </div>
+        <div class="kv" id="repHead"></div>
 
-    <div class="card">
-      <label style="margin-top:0">कार्य प्रकार / सामान</label>
-      <div class="scroll"><table class="rep" id="repTypes"></table></div>
-      <div class="scroll" style="margin-top:10px"><table class="rep" id="repGoods"></table></div>
+        <label>लेबर-घंटे</label>
+        <div class="scroll"><table class="rep" id="repLabour"></table></div>
+
+        <label>दिन-वार</label>
+        <div class="scroll"><table class="rep" id="repDays"></table></div>
+
+        <label>कार्य प्रकार / सामान</label>
+        <div class="scroll"><table class="rep" id="repTypes"></table></div>
+        <div class="scroll" style="margin-top:10px"><table class="rep" id="repGoods"></table></div>
+      </div>
     </div>
   </section>
 
