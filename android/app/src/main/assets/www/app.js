@@ -10,7 +10,7 @@
 (function (root) {
   'use strict';
 
-  const APP_VERSION = '1.8.0';
+  const APP_VERSION = '1.9.0';
   const K = { api: 'jcm.api', key: 'jcm.key', lists: 'jcm.lists', queue: 'jcm.queue', draft: 'jcm.draft', shift: 'jcm.shift', rates: 'jcm.rates', buys: 'jcm.buys', buyLists: 'jcm.buylists' };
   const DEFAULT_SHIFT = { start: '08:30', finish: '18:30' };   // मिल का सामान्य समय; ⚙ सेटिंग से बदला जा सकता है
   // पैसे की दरें — ⚙ सेटिंग से बदली जा सकती हैं
@@ -146,14 +146,40 @@
   }
 
   // एक line का वज़न और मूल भाव
+  /* वज़न और भाव दो अलग बातें हैं — इन्हें जोड़ना गलत था। चारों हाल असली हैं:
+
+       चोकर          हर बोरा 35kg बराबर          भाव ₹1000 / बोरा
+       चना, दाल      हर बोरा 30kg बराबर          भाव ₹7050 / क्विंटल
+       खल्ली, धान    कुल वज़न पता, बोरे कम-ज़्यादा   भाव ₹/क्विंटल
+       (और चौथा) कुल वज़न पता, भाव बोरे के हिसाब
+
+     इसलिए line पर दो अलग चुनाव रहते हैं:
+       weigh  = 'perBag' (बोरे × एक बोरे का kg)  या  'total' (कुल kg सीधा)
+       rateBy = 'bag' (₹/बोरा)                    या  'quintal' (₹/क्विंटल)      */
+
+  function lineWeigh(l) {
+    if (l && (l.weigh === 'perBag' || l.weigh === 'total')) return l.weigh;
+    return (l && l.mode === 'quintal') ? 'total' : 'perBag';      // पुराने रिकॉर्ड
+  }
+  function lineRateBy(l) {
+    if (l && (l.rateBy === 'bag' || l.rateBy === 'quintal')) return l.rateBy;
+    return (l && l.mode === 'quintal') ? 'quintal' : 'bag';       // पुराने रिकॉर्ड
+  }
+  function lineKg(l) {
+    if (lineWeigh(l) === 'total') {
+      const kg = Math.max(0, Number(l && l.totalKg) || 0);
+      if (kg > 0) return kg;
+      return Math.max(0, Number(l && l.qtl) || 0) * 100;          // पुराने रिकॉर्ड क्विंटल में थे
+    }
+    return Math.max(0, Number(l && l.bags) || 0) * Math.max(0, Number(l && l.bagKg) || 0);
+  }
   function lineBase(l) {
     const bags = Math.max(0, Number(l && l.bags) || 0);
-    if (l && l.mode === 'quintal') {
-      const kg = Math.max(0, Number(l.qtl) || 0) * 100;
-      return { bags: bags, kg: kg, basic: (kg / 100) * (Number(l.rate) || 0) };
-    }
-    const bagKg = Math.max(0, Number(l && l.bagKg) || 0);
-    return { bags: bags, kg: bags * bagKg, basic: bags * (Number(l && l.rate) || 0) };
+    const kg = lineKg(l);
+    const rate = Math.max(0, Number(l && l.rate) || 0);
+    // मूल रक़म भाव के हिसाब से — बोरे के भाव में बोरों से, क्विंटल के भाव में वज़न से
+    const basic = lineRateBy(l) === 'quintal' ? (kg / 100) * rate : bags * rate;
+    return { bags: bags, kg: kg, basic: basic };
   }
 
   /* पूरा हिसाब। लौटाता है हर line का असली रेट (₹/क्विंटल और ₹/बोरा) और ट्रक का जोड़। */
@@ -184,7 +210,8 @@
       const b = lineBase(l);
       const lineExp = sumExpenses(l && l.expenses, b);
       return {
-        item: (l && l.item) || '', party: (l && l.party) || truckParty, mode: (l && l.mode) === 'quintal' ? 'quintal' : 'bag',
+        item: (l && l.item) || '', party: (l && l.party) || truckParty,
+        weigh: lineWeigh(l), rateBy: lineRateBy(l),
         bags: b.bags, kg: b.kg, qtl: b.kg / 100, rate: Number(l && l.rate) || 0,
         basic: b.basic, lineExp: lineExp, value: b.basic + lineExp,
         share: 0, total: 0, perKg: null, perQuintal: null, perBag: null
@@ -640,8 +667,8 @@
           lines: b.lines.map(function (l) {
             return {
               item: String(l.item || '').trim(), party: String(l.party || '').trim(),
-              mode: l.mode === 'quintal' ? 'quintal' : 'bag',
-              bags: Number(l.bags) || 0, bagKg: Number(l.bagKg) || 0, qtl: Number(l.qtl) || 0,
+              weigh: lineWeigh(l), rateBy: lineRateBy(l),
+              bags: Number(l.bags) || 0, bagKg: Number(l.bagKg) || 0, totalKg: lineWeigh(l) === 'total' ? lineKg(l) : 0,
               rate: Number(l.rate) || 0,
               expenses: (l.expenses || []).map(function (x) {
                 return { name: String(x.name || '').trim(), kind: EXPENSE_KINDS.indexOf(x.kind) >= 0 ? x.kind : 'flat', value: Number(x.value) || 0 };
@@ -767,7 +794,7 @@
     return core;
   }
 
-  const api = { createCore: createCore, validate: validate, uuid: uuid, todayLocal: todayLocal, durationText: durationText, fmtDate: fmtDate, cleanNames: cleanNames, pickUpdate: pickUpdate, normalizeBuyParty: normalizeBuyParty, purchaseCalc: purchaseCalc, expenseAmount: expenseAmount, EXPENSE_KINDS: EXPENSE_KINDS, splitShift: splitShift, hhmm: hhmm, DEFAULT_SHIFT: DEFAULT_SHIFT, APP_VERSION: APP_VERSION };
+  const api = { createCore: createCore, validate: validate, uuid: uuid, todayLocal: todayLocal, durationText: durationText, fmtDate: fmtDate, cleanNames: cleanNames, pickUpdate: pickUpdate, normalizeBuyParty: normalizeBuyParty, lineWeigh: lineWeigh, lineRateBy: lineRateBy, lineKg: lineKg, purchaseCalc: purchaseCalc, expenseAmount: expenseAmount, EXPENSE_KINDS: EXPENSE_KINDS, splitShift: splitShift, hhmm: hhmm, DEFAULT_SHIFT: DEFAULT_SHIFT, APP_VERSION: APP_VERSION };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.JCM = api;
 
@@ -1212,7 +1239,7 @@
   let draftLineAt = -1;        // -1 = नया सामान, वरना draftBuy.lines का index
   const KIND_LABEL = { flat: 'सीधी रक़म ₹', perQuintal: '₹ / क्विंटल', perBag: '₹ / बोरा', percent: '% मूल पर' };
 
-  function newLine() { return { item: '', party: '', mode: 'bag', bags: '', bagKg: '', qtl: '', rate: '', expenses: [] }; }
+  function newLine() { return { item: '', party: '', weigh: 'perBag', rateBy: 'bag', bags: '', bagKg: '', totalKg: '', rate: '', expenses: [] }; }
   function blankBuy() {
     // सामान शुरू में एक भी नहीं — "➕ सामान जोड़ो" से popup खुलेगा
     return { date: todayLocal(), vehicle: '', party: '', multiParty: false, basis: 'weight', lines: [], expenses: [] };
@@ -1256,9 +1283,10 @@
       h = '<div class="card"><div class="empty">अभी कोई सामान नहीं।<br>नीचे "➕ सामान जोड़ो" दबाओ।</div></div>';
     }
     draftBuy.lines.forEach(function (l, i) {
-      const qty = l.mode === 'quintal'
-        ? (esc(l.qtl || '0') + ' क्विंटल × ₹' + esc(l.rate || '0') + '/क्विं')
-        : (esc(l.bags || '0') + ' बोरे × ' + esc(l.bagKg || '0') + 'kg × ₹' + esc(l.rate || '0') + '/बोरा');
+      const wt = l.weigh === 'total'
+        ? ('कुल ' + esc(l.totalKg || '0') + 'kg, ' + esc(l.bags || '0') + ' बोरे')
+        : (esc(l.bags || '0') + ' बोरे × ' + esc(l.bagKg || '0') + 'kg');
+      const qty = wt + ' · ₹' + esc(l.rate || '0') + (l.rateBy === 'quintal' ? '/क्विं' : '/बोरा');
       const pty = String(l.party || '').trim();
       h += '<div class="card lrow">' +
         '<div class="top"><b>' + esc(l.item || '(सामान नहीं चुना)') + '</b></div>' +
@@ -1294,7 +1322,8 @@
   }
   function renderItemModal() {
     const L = core.buyLists();
-    const l = draftLine, bag = l.mode !== 'quintal';
+    const l = draftLine;
+    const perBag = lineWeigh(l) === 'perBag', byQtl = lineRateBy(l) === 'quintal';
     let h = '<label style="margin-top:0">सामान</label>' +
       '<select data-m="item">' + optsHtml(L.items, l.item) + '</select>';
     if (draftBuy.multiParty) {
@@ -1303,18 +1332,26 @@
         '<div class="hint" style="margin-top:6px">खाली छोड़ोगे तो ट्रक वाला सप्लायर' +
         (draftBuy.party ? ' (' + esc(draftBuy.party) + ')' : '') + ' लगेगा।</div>';
     }
-    h += '<label>भाव किस हिसाब से?</label>' +
+    h += '<label>वज़न कैसे पता है?</label>' +
       '<div class="chips2">' +
-        '<button data-mmode="bag"' + (bag ? ' class="on"' : '') + '>बोरे के भाव</button>' +
-        '<button data-mmode="quintal"' + (!bag ? ' class="on"' : '') + '>क्विंटल के भाव</button>' +
+        '<button data-mweigh="perBag"' + (perBag ? ' class="on"' : '') + '>हर बोरा बराबर</button>' +
+        '<button data-mweigh="total"' + (!perBag ? ' class="on"' : '') + '>कुल वज़न (बोरे कम-ज़्यादा)</button>' +
       '</div>' +
-      (bag
-        ? '<div class="row3"><div><label>बोरे</label><input type="number" inputmode="numeric" step="any" data-m="bags" value="' + esc(l.bags) + '"></div>' +
-          '<div><label>एक बोरा kg</label><input type="number" inputmode="decimal" step="any" data-m="bagKg" value="' + esc(l.bagKg) + '"></div>' +
-          '<div><label>₹ / बोरा</label><input type="number" inputmode="decimal" step="any" data-m="rate" value="' + esc(l.rate) + '"></div></div>'
-        : '<div class="row3"><div><label>क्विंटल</label><input type="number" inputmode="decimal" step="any" data-m="qtl" value="' + esc(l.qtl) + '"></div>' +
-          '<div><label>बोरे (वैकल्पिक)</label><input type="number" inputmode="numeric" step="any" data-m="bags" value="' + esc(l.bags) + '"></div>' +
-          '<div><label>₹ / क्विंटल</label><input type="number" inputmode="decimal" step="any" data-m="rate" value="' + esc(l.rate) + '"></div></div>') +
+      '<label>भाव किस हिसाब से?</label>' +
+      '<div class="chips2">' +
+        '<button data-mrate="bag"' + (!byQtl ? ' class="on"' : '') + '>₹ / बोरा</button>' +
+        '<button data-mrate="quintal"' + (byQtl ? ' class="on"' : '') + '>₹ / क्विंटल</button>' +
+      '</div>' +
+      '<div class="row3">' +
+        '<div><label>बोरे</label><input type="number" inputmode="numeric" step="any" data-m="bags" value="' + esc(l.bags) + '"></div>' +
+        (perBag
+          ? '<div><label>एक बोरा kg</label><input type="number" inputmode="decimal" step="any" data-m="bagKg" value="' + esc(l.bagKg) + '"></div>'
+          : '<div><label>कुल kg</label><input type="number" inputmode="decimal" step="any" data-m="totalKg" value="' + esc(l.totalKg) + '"></div>') +
+        '<div><label>' + (byQtl ? '₹ / क्विंटल' : '₹ / बोरा') + '</label><input type="number" inputmode="decimal" step="any" data-m="rate" value="' + esc(l.rate) + '"></div>' +
+      '</div>' +
+      '<div class="hint" style="margin-top:6px">' + (perBag
+        ? 'बोरे × एक बोरे का kg से कुल वज़न बन जाएगा।'
+        : 'हर बोरे का वज़न बराबर न हो (खल्ली, धान) तो कुल kg यहाँ भरो — बोरे सिर्फ़ गिनती के लिए।') + '</div>' +
       '<label>इसी सामान के ख़र्च (गद्दी, टैक्स…)</label>' + expRows(l.expenses, 'M') +
       '<button class="btn ghost sm" data-addexp="M" style="width:100%">➕ ख़र्च</button>' +
       '<div class="res" id="imRes"></div>';
@@ -1549,7 +1586,7 @@
     }
   }
   function onBuyClick(ev) {
-    const t = ev.target.closest ? ev.target.closest('[data-rmline],[data-editline],[data-addexp],[data-rmexp],[data-mmode]') : null;
+    const t = ev.target.closest ? ev.target.closest('[data-rmline],[data-editline],[data-addexp],[data-rmexp],[data-mweigh],[data-mrate]') : null;
     if (!t) return;
     const inModal = !!(t.closest && t.closest('#itemModal'));
     if (t.hasAttribute('data-editline')) { openItemModal(parseInt(t.getAttribute('data-editline'), 10)); return; }
@@ -1561,8 +1598,10 @@
       list.push({ name: '', kind: 'percent', value: '' });
     } else if (t.hasAttribute('data-rmexp')) {
       lineExpList(t.getAttribute('data-rmexp')).splice(parseInt(t.getAttribute('data-i'), 10), 1);
-    } else if (t.hasAttribute('data-mmode')) {
-      if (draftLine) draftLine.mode = t.getAttribute('data-mmode');
+    } else if (t.hasAttribute('data-mweigh')) {
+      if (draftLine) draftLine.weigh = t.getAttribute('data-mweigh');
+    } else if (t.hasAttribute('data-mrate')) {
+      if (draftLine) draftLine.rateBy = t.getAttribute('data-mrate');
     }
     if (inModal) renderItemModal(); else renderBuyForm();
   }
