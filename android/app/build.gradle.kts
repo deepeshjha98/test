@@ -29,8 +29,13 @@ android {
                 storePassword = System.getenv("KEYSTORE_PASSWORD")
                 keyAlias = System.getenv("KEY_ALIAS")
                 keyPassword = System.getenv("KEY_PASSWORD")
-                enableV1Signing = true   // META-INF/*.RSA भी रहे → openssl/keytool से signature check आसान
+                /* v1 (JAR) signing बंद — minSdk 24 है और v2 उसी (Android 7.0) से चलता है,
+                   इसलिए हर सँभाले जाने वाले फ़ोन पर v2/v3 काफ़ी है। v1 पुरानी योजना है
+                   (Janus का असर उसी पर होता था) और उसके रहने से कोई फ़ायदा नहीं —
+                   signature की जाँच v2 के signing block से भी हो जाती है।           */
+                enableV1Signing = false
                 enableV2Signing = true
+                enableV3Signing = true
             }
         }
     }

@@ -10,7 +10,7 @@
 (function (root) {
   'use strict';
 
-  const APP_VERSION = '1.10.0';
+  const APP_VERSION = '1.11.0';
   const K = { api: 'jcm.api', key: 'jcm.key', lists: 'jcm.lists', queue: 'jcm.queue', draft: 'jcm.draft', shift: 'jcm.shift', rates: 'jcm.rates', buys: 'jcm.buys', buyLists: 'jcm.buylists' };
   const DEFAULT_SHIFT = { start: '08:30', finish: '18:30' };   // मिल का सामान्य समय; ⚙ सेटिंग से बदला जा सकता है
   // पैसे की दरें — ⚙ सेटिंग से बदली जा सकती हैं
@@ -1312,49 +1312,97 @@
   /* नाम और वज़न के खानों में टाइप करते समय पूरा हिस्सा दुबारा नहीं बनता —
      वरना हर अक्षर पर keyboard बंद हो जाता। ढाँचा बदले तभी दुबारा बनता है। */
   let draftItems = [];
+  let draftItem = null;      // popup में खुला सामान (नक़ल)
+  let draftItemAt = -1;      // -1 = नया
+
+  // टाइल पर बस इतना: नाम, और छोटे अक्षरों में वज़न + भाव
+  function itemBrief(it) {
+    const kgs = String(it.kgs || '').replace(/\s*,\s*/g, ',').replace(/\s+/g, ',').trim();
+    return (kgs || '—') + ' · ' + (it.rateBy === 'quintal' ? 'क्विं' : 'बोरा');
+  }
 
   function renderItemList() {
     let h = '';
-    if (!draftItems.length) h = '<div class="empty">अभी कोई सामान नहीं — नीचे "➕ सामान" दबाओ।</div>';
     draftItems.forEach(function (it, i) {
-      const qtl = it.rateBy === 'quintal';
-      h += '<div class="lrow">' +
-        '<div class="top"><b>' + (i + 1) + '</b><button class="xbtn" data-rmbi="' + i + '">✕</button></div>' +
-        '<div class="row2">' +
-          '<div><label style="margin-top:0">नाम</label>' +
-            '<input type="text" data-bi="' + i + '" data-f="name" value="' + esc(it.name) + '" placeholder="चना"></div>' +
-          '<div><label style="margin-top:0">बोरे का kg</label>' +
-            '<input type="text" inputmode="decimal" data-bi="' + i + '" data-f="kgs" value="' + esc(it.kgs) + '" placeholder="30  या  30, 50"></div>' +
-        '</div>' +
-        '<div class="chips2" style="margin-top:8px;margin-bottom:0">' +
-          '<button data-birate="' + i + ':bag"' + (qtl ? '' : ' class="on"') + '>₹ / बोरा</button>' +
-          '<button data-birate="' + i + ':quintal"' + (qtl ? ' class="on"' : '') + '>₹ / क्विंटल</button>' +
-        '</div>' +
-      '</div>';
+      h += '<button class="tile" data-openbi="' + i + '">' +
+        '<b>' + esc(it.name || '(बिना नाम)') + '</b><span>' + esc(itemBrief(it)) + '</span></button>';
     });
+    h += '<button class="tile add" data-openbi="-1">➕ सामान</button>';
     $('blItemList').innerHTML = h;
   }
 
-  $('addBlItem').onclick = function () { draftItems.push({ name: '', kgs: '', rateBy: 'bag' }); renderItemList(); };
-  $('blItemList').addEventListener('input', function (ev) {
+  function saveItemsNow() {
+    const l = core.setBuyLists(draftItems, $('blParties').value);
+    draftItems = l.items.map(function (x) { return { name: x.name, kgs: x.kgs.join(', '), rateBy: x.rateBy }; });
+    renderItemList();
+    $('buyListsInfo').textContent = l.items.length + ' सामान · ' + l.parties.length + ' सप्लायर';
+    return l;
+  }
+
+  function openMasterModal(i) {
+    draftItemAt = (i == null || i < 0) ? -1 : i;
+    draftItem = draftItemAt < 0 ? { name: '', kgs: '', rateBy: 'bag' }
+                                : Object.assign({}, draftItems[draftItemAt]);
+    $('imtTitle').textContent = draftItemAt < 0 ? 'नया सामान' : 'सामान बदलो';
+    $('imtDel').hidden = draftItemAt < 0;
+    renderMasterModal();
+    $('imtModal').hidden = false;
+  }
+  function closeMasterModal() { $('imtModal').hidden = true; draftItem = null; draftItemAt = -1; }
+
+  function renderMasterModal() {
+    const it = draftItem, qtl = it.rateBy === 'quintal';
+    $('imtBody').innerHTML =
+      '<label style="margin-top:0">नाम</label>' +
+      '<input type="text" data-mi="name" value="' + esc(it.name) + '" placeholder="चना">' +
+      '<label>एक बोरे का वज़न (kg)</label>' +
+      '<input type="text" inputmode="decimal" data-mi="kgs" value="' + esc(it.kgs) + '" placeholder="30">' +
+      '<div class="hint" style="margin-top:6px">हर बोरे का वज़न कम-ज़्यादा हो (खल्ली, धान) तो ' +
+        '<b>खाली छोड़ दो</b> — तब कुल kg पूछा जाएगा।<br>' +
+        'एक ही सामान दो पैक में आता हो तो दोनों लिखो — जैसे <b>30, 50</b>।</div>' +
+      '<label>भाव किस हिसाब से लिखा होता है?</label>' +
+      '<div class="chips2" style="margin-bottom:0">' +
+        '<button data-mirate="bag"' + (qtl ? '' : ' class="on"') + '>₹ / बोरा</button>' +
+        '<button data-mirate="quintal"' + (qtl ? ' class="on"' : '') + '>₹ / क्विंटल</button>' +
+      '</div>';
+  }
+
+  $('imtClose').onclick = closeMasterModal;
+  $('imtCancel').onclick = closeMasterModal;
+  $('imtOk').onclick = function () {
+    if (!draftItem) return;
+    const nm = String(draftItem.name || '').trim();
+    if (!nm) { toast('सामान का नाम लिखो।', 'err', 3000); return; }
+    const clash = draftItems.some(function (x, i) {
+      return i !== draftItemAt && String(x.name || '').trim() === nm;
+    });
+    if (clash) { toast('"' + nm + '" पहले से सूची में है।', 'err', 3500); return; }
+    if (draftItemAt < 0) draftItems.push(draftItem); else draftItems[draftItemAt] = draftItem;
+    closeMasterModal();
+    saveItemsNow();
+    toast('✔ सूची save हुई', 'ok');
+  };
+  $('imtDel').onclick = function () {
+    if (draftItemAt < 0) return;
+    if (!confirm('"' + (draftItems[draftItemAt].name || 'यह सामान') + '" हटाना है?')) return;
+    draftItems.splice(draftItemAt, 1);
+    closeMasterModal();
+    saveItemsNow();
+    toast('हटा दिया', 'ok');
+  };
+  $('imtModal').addEventListener('input', function (ev) {
     const t = ev.target;
-    if (!t || !t.hasAttribute || !t.hasAttribute('data-bi')) return;
-    const it = draftItems[parseInt(t.getAttribute('data-bi'), 10)];
-    if (it) it[t.getAttribute('data-f')] = t.value;      // सिर्फ़ याद रखो, दुबारा मत बनाओ
+    if (t && t.hasAttribute && t.hasAttribute('data-mi') && draftItem) draftItem[t.getAttribute('data-mi')] = t.value;
+  });
+  $('imtModal').addEventListener('click', function (ev) {
+    const t = ev.target.closest ? ev.target.closest('[data-mirate]') : null;
+    if (!t || !draftItem) return;
+    draftItem.rateBy = t.getAttribute('data-mirate');
+    renderMasterModal();
   });
   $('blItemList').addEventListener('click', function (ev) {
-    const t = ev.target.closest ? ev.target.closest('[data-rmbi],[data-birate]') : null;
-    if (!t) return;
-    if (t.hasAttribute('data-rmbi')) {
-      const i = parseInt(t.getAttribute('data-rmbi'), 10);
-      if (draftItems[i] && String(draftItems[i].name || '').trim() && !confirm('"' + draftItems[i].name + '" हटाना है?')) return;
-      draftItems.splice(i, 1);
-    } else {
-      const q = t.getAttribute('data-birate').split(':');
-      const it = draftItems[parseInt(q[0], 10)];
-      if (it) it.rateBy = q[1];
-    }
-    renderItemList();
+    const t = ev.target.closest ? ev.target.closest('[data-openbi]') : null;
+    if (t) openMasterModal(parseInt(t.getAttribute('data-openbi'), 10));
   });
 
   // ══════════════════ खरीद की screen ══════════════════
@@ -1822,10 +1870,7 @@
   });
 
   $('saveBuyLists').onclick = function () {
-    const l = core.setBuyLists(draftItems, $('blParties').value);
-    draftItems = l.items.map(function (x) { return { name: x.name, kgs: x.kgs.join(', '), rateBy: x.rateBy }; });
-    renderItemList();
-    $('buyListsInfo').textContent = l.items.length + ' सामान · ' + l.parties.length + ' सप्लायर';
+    saveItemsNow();
     toast('✔ खरीद की लिस्ट save हुई', 'ok');
   };
 

@@ -105,6 +105,14 @@
     #upBar button:disabled { opacity: .6; }
     #upBar button.x { background: transparent; color: #fff; border: 1px solid rgba(255,255,255,.6);
                       padding: 8px 11px; font-size: 15px; }
+    /* सामान की सूची — हर सामान एक लाइन, एक लाइन में दो */
+    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .tile { display: flex; align-items: center; gap: 6px; width: 100%; text-align: left; overflow: hidden;
+            border: 1px solid #b9c1cb; background: #fff; border-radius: 10px; padding: 0 10px;
+            min-height: 46px; color: var(--text); font-size: 15px; }
+    .tile b { flex: 1; min-width: 0; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .tile span { flex: 0 0 auto; font-size: 11px; color: var(--muted); white-space: nowrap; }
+    .tile.add { border-style: dashed; color: var(--blue); font-weight: 700; justify-content: center; }
     .chk { display: flex; align-items: center; gap: 9px; font-weight: 600; font-size: 14px; margin: 12px 0 0; }
     .chk input { width: 20px; height: 20px; flex: 0 0 auto; }
     .modal { position: fixed; inset: 0; z-index: 20; background: rgba(0,0,0,.45);
@@ -117,6 +125,8 @@
     .mfoot { padding: 12px 14px calc(12px + env(safe-area-inset-bottom)); border-top: 1px solid var(--line);
              display: flex; gap: 10px; }
     .mfoot .btn { margin: 0; flex: 1; }
+    /* .btn पर width:100% है, इसलिए सिर्फ़ flex से चौड़ाई नहीं रुकती — width भी auto करना पड़ता है */
+    .mfoot .btn.icon { flex: 0 0 auto; width: auto; padding: 12px 15px; }
     .warn2 { font-size: 13px; color: var(--amber); font-weight: 600; margin-top: 10px; }
     .money { text-align: center; padding: 10px 0 2px; }
     .money .rs { font-size: 28px; font-weight: 800; line-height: 1.15; }
@@ -356,11 +366,8 @@
       <div class="hint" style="margin-top:0">📦 खरीद में इन्हीं में से चुनना होगा।</div>
 
       <label>सामान — नाम के साथ बोरे का वज़न भी</label>
-      <div class="hint" style="margin-top:0">वज़न यहीं लिख दो तो entry में अपने-आप भर जाएगा।
-        हर बोरा कम-ज़्यादा हो (खल्ली, धान) तो वज़न खाली छोड़ो।
-        एक ही सामान दो पैक में आता हो तो दोनों लिखो — जैसे <b>30, 50</b>।</div>
-      <div id="blItemList"></div>
-      <button class="btn ghost sm" id="addBlItem" style="width:100%">➕ सामान</button>
+      <div class="hint" style="margin-top:0">किसी सामान पर दबाओ तो उसका वज़न और भाव बदल सकते हो।</div>
+      <div id="blItemList" class="grid2"></div>
 
       <label>सप्लायर (हर लाइन में एक नाम)</label>
       <textarea id="blParties" rows="4" placeholder="सप्लायर का नाम"></textarea>
@@ -435,6 +442,17 @@
     <div class="mfoot">
       <button class="btn ghost" id="imCancel">रद्द</button>
       <button class="btn" id="imOk">✔ जोड़ो</button>
+    </div>
+  </div>
+</div>
+<div id="imtModal" class="modal" hidden>
+  <div class="sheet">
+    <div class="mhead"><b id="imtTitle">सामान</b><button class="xbtn" id="imtClose">✕</button></div>
+    <div class="mbody" id="imtBody"></div>
+    <div class="mfoot">
+      <button class="btn danger icon" id="imtDel">🗑</button>
+      <button class="btn ghost" id="imtCancel">रद्द</button>
+      <button class="btn" id="imtOk">✔ ठीक है</button>
     </div>
   </div>
 </div>
