@@ -58,6 +58,18 @@
     .item .s { font-size: 14px; color: var(--muted); margin-top: 3px; }
     .lrow .s { font-size: 14px; color: var(--muted); margin-top: 3px; }
     .item .e { font-size: 14px; color: var(--red); margin-top: 4px; }
+    /* दर्ज खरीद — हर ट्रक एक कार्ड, सामान एक साफ़ तालिका में */
+    .buy { border-top: 1px solid var(--line); padding: 12px 0; }
+    .buy:first-of-type { border-top: 0; padding-top: 0; }
+    .bh { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; margin-bottom: 8px; }
+    .bhl b { font-size: 16px; }
+    .dim { font-size: 13px; color: var(--muted); }
+    .buy details { margin: 0; }
+    .buy summary { list-style: none; cursor: pointer; font-size: 14px; font-weight: 600; color: var(--blue);
+                   padding: 9px 0; border-top: 1px dashed var(--line); border-bottom: 1px dashed var(--line); }
+    .buy summary::-webkit-details-marker { display: none; }
+    .buy summary::before { content: '▸ '; }
+    .buy details[open] summary::before { content: '▾ '; }
     .st { font-size: 13px; font-weight: 700; padding: 2px 8px; border-radius: 10px; white-space: nowrap; }
     .st.pending { background: #fff3e0; color: var(--amber); }
     .st.sent { background: #e8f5e9; color: var(--green); }

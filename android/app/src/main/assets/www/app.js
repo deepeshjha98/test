@@ -10,7 +10,7 @@
 (function (root) {
   'use strict';
 
-  const APP_VERSION = '1.14.0';
+  const APP_VERSION = '1.15.0';
   const K = { api: 'jcm.api', key: 'jcm.key', lists: 'jcm.lists', queue: 'jcm.queue', draft: 'jcm.draft', shift: 'jcm.shift', rates: 'jcm.rates', buys: 'jcm.buys', buyLists: 'jcm.buylists' };
   const DEFAULT_SHIFT = { start: '08:30', finish: '18:30' };   // मिल का सामान्य समय; ⚙ सेटिंग से बदला जा सकता है
   // पैसे की दरें — ⚙ सेटिंग से बदली जा सकती हैं
@@ -854,17 +854,25 @@
           if (from && b.date < from) return;
           if (to && b.date > to) return;
           purchaseCalc(b).lines.forEach(function (r) {
-            // बिना वज़न वाला सामान (तेल के कार्टून) भी गिना जाए — पहले छूट जाता था
+            // बिना वज़न वाला सामान (तेल के पैक) भी गिना जाए — पहले छूट जाता था
             if (!(r.kg > 0) && !(r.bags > 0)) return;
-            const k = r.item || '(बिना नाम)';
-            const e = byItem[k] || (byItem[k] = { item: k, kg: 0, bags: 0, units: 0, total: 0, lines: 0, parties: {} });
+            /* एक ही सामान अलग-अलग नाप के पैक में आता हो (चना 30kg और 50kg) तो
+               उन्हें एक पंक्ति में जोड़ना गलत होगा — ₹/पैक दो अलग चीज़ों का औसत बन
+               जाता। इसलिए हर नाप की अपनी पंक्ति; नाम वही रहता है।              */
+            const packKg = (r.kind !== 'loose' && r.bags > 0 && r.kg > 0)
+              ? Math.round((r.kg / r.bags) * 1000) / 1000 : 0;
+            const nm = r.item || '(बिना नाम)';
+            const k = nm + '\u0000' + packKg + '\u0000' + r.unitsPer;
+            const e = byItem[k] || (byItem[k] = { item: nm, packKg: packKg, unitsPer: r.unitsPer,
+                                                 kg: 0, bags: 0, units: 0, total: 0, lines: 0, parties: {} });
             e.kg += r.kg; e.bags += r.bags; e.units += r.units; e.total += r.total; e.lines++;
             if (r.party) e.parties[r.party] = true;
           });
         });
         return Object.keys(byItem).map(function (k) {
           const e = byItem[k];
-          return { item: e.item, lines: e.lines, kg: e.kg, qtl: e.kg / 100, bags: e.bags, units: e.units,
+          return { item: e.item, packKg: e.packKg, unitsPer: e.unitsPer,
+                   lines: e.lines, kg: e.kg, qtl: e.kg / 100, bags: e.bags, units: e.units,
                    total: e.total, packName: PACK, unitName: UNIT,
                    perQuintal: e.kg > 0 ? e.total / (e.kg / 100) : null,
                    perBag: e.bags > 0 ? e.total / e.bags : null,
@@ -1168,7 +1176,7 @@
     if (!rows.length) h += '<tr><td colspan="' + cols.length + '" style="text-align:center;color:#6b7480">कुछ नहीं</td></tr>';
     rows.forEach(function (r) {
       h += '<tr>' + r.map(function (c, i) {
-        return '<td' + (i === 2 ? ' class="ot"' : '') + '>' + esc(c) + '</td>';
+        return '<td' + (i === 2 && c !== '—' ? ' class="ot"' : '') + '>' + esc(c) + '</td>';
       }).join('') + '</tr>';
     });
     if (totalRow && rows.length) {
@@ -1800,12 +1808,23 @@
     $('bResult').innerHTML = h;
   }
 
+  // "30kg" या "25kg × 50" — पैक की नाप एक ही जगह से बने
+  function packLabel(kg, units) {
+    if (!(kg > 0)) return units > 0 ? '× ' + units : '—';
+    return hhKg(kg) + 'kg' + (units > 0 ? ' × ' + units : '');
+  }
+  function hhKg(kg) { return String(Math.round(kg * 1000) / 1000); }
+
   function renderBuyList() {
     const rows = core.buyRates('', '');
     const anyUnit = rows.some(function (x) { return x.units > 0; });
-    table($('buyRates'), ['सामान', 'क्विंटल', '₹/क्विं', '₹/' + PACK].concat(anyUnit ? ['₹/' + UNIT] : []),
+    /* क्विंटल का कॉलम (कुल कितना आया) हटा दिया — रोज़ के काम में उसकी ज़रूरत नहीं।
+       उसकी जगह पैक की नाप, जिससे यह भी साफ़ हो जाता है कि दो पंक्तियों वाला
+       एक ही सामान असल में दो अलग नाप का है।                                  */
+    table($('buyRates'), ['सामान', PACK, '₹/क्विं', '₹/' + PACK].concat(anyUnit ? ['₹/' + UNIT] : []),
       rows.map(function (x) {
-        const r = [x.item, x.kg > 0 ? x.qtl.toFixed(2) : '—', x.perQuintal == null ? '—' : rs(x.perQuintal),
+        const r = [x.item, packLabel(x.packKg, x.unitsPer),
+                   x.perQuintal == null ? '—' : rs(x.perQuintal),
                    x.perBag == null ? '—' : rs(x.perBag)];
         if (anyUnit) r.push(x.perUnit == null ? '—' : rs(x.perUnit));
         return r;
@@ -1817,19 +1836,36 @@
     let h = '<label style="margin-top:0">दर्ज खरीद</label>';
     all.forEach(function (b) {
       const r = core.calcBuy(b);
-      h += '<div class="item"><div class="t"><span>' + esc(fmtDate(b.date)) + (b.vehicle ? ' · ' + esc(b.vehicle) : '') +
-        '</span><span class="st sent">' + esc(rs(r.total)) + '</span></div>';
+      const seen = {}, parties = [];
+      r.lines.forEach(function (x) { if (x.party && !seen[x.party]) { seen[x.party] = 1; parties.push(x.party); } });
+      // एक ही सप्लायर हो तो उसका नाम ऊपर एक बार — हर पंक्ति पर दोहराना शोर है
+      const one = parties.length === 1 ? parties[0] : '';
+      const uni = r.lines.some(function (x) { return x.units > 0; });
+
+      let rowsHtml = '';
       r.lines.forEach(function (x) {
-        const per = [];
-        if (x.perQuintal != null) per.push('<b>' + esc(rs(x.perQuintal)) + '/क्विं</b>');
-        if (x.perBag != null) per.push(esc(rs(x.perBag)) + '/' + esc(x.packName));
-        if (x.perUnit != null) per.push(esc(rs(x.perUnit)) + '/' + esc(x.unitName));
-        h += '<div class="s">' + esc(x.item || '—') + (x.party ? ' · ' + esc(x.party) : '') + ' — ' +
-          (x.kg > 0 ? x.qtl.toFixed(2) + ' क्विं · ' : x.bags + ' ' + esc(x.packName) + ' · ') +
-          per.join(' · ') + '</div>';
+        rowsHtml += '<tr><td>' + esc(x.item || '—') +
+          (one ? '' : (x.party ? '<br><span class="dim">' + esc(x.party) + '</span>' : '')) + '</td>' +
+          '<td>' + esc(x.kg > 0 ? x.qtl.toFixed(2) + ' क्विं' : x.bags + ' ' + PACK) + '</td>' +
+          (x.perQuintal == null ? '<td>—</td>' : '<td class="ot">' + esc(rs(x.perQuintal)) + '</td>') +
+          '<td>' + esc(x.perBag == null ? '—' : rs(x.perBag)) + '</td>' +
+          (uni ? '<td>' + esc(x.perUnit == null ? '—' : rs(x.perUnit)) + '</td>' : '') + '</tr>';
       });
-      h += '<div><button class="btn ghost sm" data-editbuy="' + esc(b.id) + '">✎ खोलो</button>' +
-           '<button class="btn danger sm" data-delbuy="' + esc(b.id) + '">🗑 हटाओ</button></div></div>';
+      const tbl = '<div class="scroll"><table class="rep"><thead><tr>' +
+        '<th>सामान</th><th>मात्रा</th><th>₹/क्विं</th><th>₹/' + PACK + '</th>' +
+        (uni ? '<th>₹/' + UNIT + '</th>' : '') + '</tr></thead><tbody>' + rowsHtml + '</tbody></table></div>';
+
+      h += '<div class="buy">' +
+        '<div class="bh"><div class="bhl"><b>' + esc(fmtDate(b.date)) + '</b>' +
+          '<div class="dim">' + esc([one, b.vehicle].filter(Boolean).join(' · ') ||
+            (parties.length > 1 ? parties.length + ' सप्लायर' : '')) + '</div></div>' +
+          '<span class="st sent">' + esc(rs(r.total)) + '</span></div>' +
+        // लंबी सूची अपने-आप न फैले — गिनती दिखाकर, दबाने पर खुले
+        (r.lines.length > 4
+          ? '<details><summary>' + r.lines.length + ' सामान — देखो</summary>' + tbl + '</details>'
+          : tbl) +
+        '<div><button class="btn ghost sm" data-editbuy="' + esc(b.id) + '">✎ खोलो</button>' +
+        '<button class="btn danger sm" data-delbuy="' + esc(b.id) + '">🗑 हटाओ</button></div></div>';
     });
     box.innerHTML = h;
   }
