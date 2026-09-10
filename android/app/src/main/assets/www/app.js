@@ -10,7 +10,7 @@
 (function (root) {
   'use strict';
 
-  const APP_VERSION = '1.4.0';
+  const APP_VERSION = '1.5.0';
   const K = { api: 'jcm.api', key: 'jcm.key', lists: 'jcm.lists', queue: 'jcm.queue', draft: 'jcm.draft', shift: 'jcm.shift', rates: 'jcm.rates' };
   const DEFAULT_SHIFT = { start: '08:30', finish: '18:30' };   // मिल का सामान्य समय; ⚙ सेटिंग से बदला जा सकता है
   // पैसे की दरें — ⚙ सेटिंग से बदली जा सकती हैं
@@ -257,6 +257,21 @@
       // एक entry का बँटवारा (UI के लिए) — मौजूदा शिफ्ट के हिसाब से
       split: function (start, finish) { return splitShift(start, finish, core.getShift()); },
 
+      /* एक entry पर इंसेंटिव का हिसाब — entry भरते समय और सूची में दिखाने के लिए।
+         total     = ₹perBag × बोरे            (जो लेबरों में बँटता है)
+         perLabour = वही ÷ कितने लेबर          (हर आदमी के हिस्से)
+         wage      = उसी काम पर लगी दिहाड़ी    (सिर्फ़ काम के घंटों वाले हिस्से पर)
+         net       = total − wage              (दिहाड़ी काटकर शुद्ध)                */
+      incentive: function (start, finish, bags, labourCount) {
+        const rates = core.getRates();
+        const sp = splitShift(start, finish, core.getShift());
+        const n = Math.max(0, Number(labourCount) || 0);
+        const b = Math.max(0, Number(bags) || 0);
+        const total = rates.perBag * b;
+        const wage = rates.wage * (sp.work * n) / 60;
+        return { total: total, perLabour: n ? total / n : 0, wage: wage, net: total - wage, split: sp };
+      },
+
       /* तारीख़ की सीमा में पूरी रिपोर्ट।
          समय दो तरह से गिना जाता है:
            घड़ी का समय  = entry कितनी देर चली (चाहे 1 लेबर हो या 10)
@@ -416,7 +431,8 @@
 
         const blank = function () {
           return { entries: 0, bags: 0, labourMin: 0, workLabourMin: 0, otLabourMin: 0,
-                   wage: 0, piece: 0, cost: 0, costPerBag: null, earnPerLabourHour: null, piecePerLabourHour: null };
+                   wage: 0, piece: 0, cost: 0, costPerBag: null, earnPerLabourHour: null, piecePerLabourHour: null,
+                   net: 0, netPerBag: null, netPerLabourHour: null };
         };
         const B = { work: blank(), ot: blank(), mixed: blank(), all: blank() };
 
@@ -438,10 +454,15 @@
 
         ['work', 'ot', 'mixed', 'all'].forEach(function (k) {
           const b = B[k];
-          if (b.bags > 0) b.costPerBag = b.cost / b.bags;
+          // दिहाड़ी काटकर शुद्ध इंसेंटिव: जो बोरा-दर दी, उसमें से उसी काम पर लगी दिहाड़ी घटाकर।
+          // ओवरटाइम में दिहाड़ी शून्य है, इसलिए वहाँ पूरा इंसेंटिव शुद्ध रहता है।
+          // काम के घंटों में यह ऋणात्मक भी हो सकता है — मतलब इंसेंटिव उस समय की दिहाड़ी तक नहीं ढँकता।
+          b.net = b.piece - b.wage;
+          if (b.bags > 0) { b.costPerBag = b.cost / b.bags; b.netPerBag = b.net / b.bags; }
           if (b.labourMin > 0) {
             b.earnPerLabourHour = b.cost / (b.labourMin / 60);      // लेबर को कुल कितना, प्रति मज़दूर-घंटा
             b.piecePerLabourHour = b.piece / (b.labourMin / 60);    // उसमें से सिर्फ़ बोरा-दर वाला हिस्सा
+            b.netPerLabourHour = b.net / (b.labourMin / 60);        // दिहाड़ी काटकर, प्रति मज़दूर-घंटा
           }
         });
 
@@ -602,6 +623,15 @@
       const sp = core.split(a, b);
       return 'कुल समय: ' + t + (sp.ot ? '  ·  काम ' + hhmm(sp.work) + ' + ओवरटाइम ' + hhmm(sp.ot) : '  ·  पूरा काम के घंटों में');
     })();
+    $('inc').textContent = (function () {
+      const bags = Number($('bags').value) || 0;
+      const n = Object.keys(selLabour).filter(function (x) { return selLabour[x]; }).length;
+      if (!bags || !n) return '';
+      const I = core.incentive($('start').value, $('finish').value, bags, n);
+      let t = 'इंसेंटिव ₹' + Math.round(I.total) + ' — हर लेबर ₹' + I.perLabour.toFixed(0);
+      if (I.wage > 0) t += '  ·  दिहाड़ी काटकर ' + (I.net < 0 ? '−₹' : '+₹') + Math.abs(I.net).toFixed(0);
+      return t;
+    })();
   }
   function formEntry() {
     return {
@@ -644,8 +674,13 @@
       d.innerHTML =
         '<div class="t"><span>' + esc(fmtDate(e.date)) + ' · ' + esc(e.type) + ' · ' + esc(e.goods) + '</span><span class="st ' + it.status + '">' + esc(st) + '</span></div>' +
         '<div class="s">' + esc(e.start) + '–' + esc(e.finish) + ' · ' + esc(e.bags) + ' बोरा · ' + e.labour.length + ' लेबर: ' + esc(e.labour.join(', ')) + '</div>' +
-        (function () { const sp = core.split(e.start, e.finish);
-          return '<div class="s">काम ' + hhmm(sp.work) + (sp.ot ? ' · <b style="color:#ef6c00">ओवरटाइम ' + hhmm(sp.ot) + '</b>' : '') + '</div>'; })() +
+        (function () {
+          const sp = core.split(e.start, e.finish);
+          const I = core.incentive(e.start, e.finish, e.bags, e.labour.length);
+          return '<div class="s">काम ' + hhmm(sp.work) + (sp.ot ? ' · <b style="color:#ef6c00">ओवरटाइम ' + hhmm(sp.ot) + '</b>' : '') + '</div>' +
+                 '<div class="s">इंसेंटिव ₹' + Math.round(I.total) + ' (हर लेबर ₹' + I.perLabour.toFixed(0) + ')' +
+                 (I.wage > 0 ? ' · दिहाड़ी काटकर <b style="color:' + (I.net < 0 ? '#c62828' : '#2e7d32') + '">' +
+                   (I.net < 0 ? '−₹' : '+₹') + Math.abs(I.net).toFixed(0) + '</b>' : '') + '</div>'; })() +
         (it.error ? '<div class="e">' + esc(it.error) + '</div>' : '');
       if (it.status !== 'sent') {
         const wrap = document.createElement('div');
@@ -866,6 +901,29 @@
     h += row('लेबर की कमाई / मज़दूर-घंटा', money2(W.earnPerLabourHour), money2(O.earnPerLabourHour));
     h += row('उसमें बोरा-दर से', money2(W.piecePerLabourHour), money2(O.piecePerLabourHour), true, true);
     $('repMoney').innerHTML = h + '</tbody>';
+
+    // ── इंसेंटिव, दिहाड़ी काटकर
+    const sign = function (v) { return (v == null) ? '—' : (v > 0 ? '+' : '') + rs(v); };
+    const sign2 = function (v) { return (v == null) ? '—' : (v > 0 ? '+₹' : v < 0 ? '−₹' : '₹') + Math.abs(v).toFixed(2); };
+    let nh = '<thead><tr><th></th><th>काम के घंटे</th><th>ओवरटाइम</th></tr></thead><tbody>';
+    nh += row('इंसेंटिव दिया (₹' + M.rates.perBag + '/बोरा)', rs(W.piece), rs(O.piece));
+    nh += row('उसी काम पर लगी दिहाड़ी', '−' + rs(W.wage), '−' + rs(O.wage));
+    nh += '<tr><td><b>दिहाड़ी काटकर शुद्ध</b></td>' +
+          '<td style="font-weight:800;color:' + (W.net < 0 ? '#c62828' : '#2e7d32') + '">' + esc(sign(W.net)) + '</td>' +
+          '<td style="font-weight:800;color:' + (O.net < 0 ? '#c62828' : '#2e7d32') + '">' + esc(sign(O.net)) + '</td></tr>';
+    nh += row('शुद्ध / बोरा', sign2(W.netPerBag), sign2(O.netPerBag), true, true);
+    nh += row('शुद्ध / मज़दूर-घंटा', sign2(W.netPerLabourHour), sign2(O.netPerLabourHour), true, true);
+    $('repNet').innerHTML = nh + '</tbody>';
+
+    let nn = '';
+    if (A.net !== 0) nn += 'इस अवधि में कुल शुद्ध इंसेंटिव ' + sign(A.net) + '। ';
+    if (W.net < 0 && W.entries) {
+      nn += 'काम के घंटों में यह ऋणात्मक है — मतलब जितना इंसेंटिव दिया, उससे ज़्यादा की दिहाड़ी उसी समय पर लग गई। ';
+    }
+    nn += 'ओवरटाइम में दिहाड़ी लगती ही नहीं, इसलिए वहाँ पूरा इंसेंटिव शुद्ध रहता है — ' +
+          'दोनों की तुलना सीधे मत कीजिए, यह फ़र्क ढाँचे का है। असली सवाल यह है कि काम के घंटों का शुद्ध ' +
+          'सुस्ती से और नीचे तो नहीं जा रहा।';
+    $('netNote').textContent = nn;
 
     let note = '';
     if (X.entries) note += 'शिफ्ट के आर-पार फैली ' + X.entries + ' entries इस तालिका में अलग नहीं दिखतीं, पर कुल में गिनी गई हैं — ' +

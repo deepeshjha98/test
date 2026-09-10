@@ -136,6 +136,7 @@
         <div><label>फिनिश टाइम</label><input type="time" id="finish"></div>
       </div>
       <div class="hint" id="dur"></div>
+      <div class="hint" id="inc" style="font-weight:600;color:#1f4e78"></div>
 
       <label>कुल बोरा</label>
       <input type="number" id="bags" inputmode="numeric" pattern="[0-9]*" min="0" step="1" placeholder="जैसे 180">
@@ -193,6 +194,13 @@
       <div id="wasteBox"></div>
       <div class="scroll" style="margin-top:10px"><table class="rep" id="repMoney"></table></div>
       <div class="hint" id="moneyNote"></div>
+    </div>
+
+    <div class="card">
+      <label style="margin-top:0">इंसेंटिव — दिहाड़ी काटकर</label>
+      <div class="hint" style="margin-top:0">जो ₹/बोरा दिया, उसमें से उसी काम पर लगी दिहाड़ी घटाकर।</div>
+      <div class="scroll"><table class="rep" id="repNet"></table></div>
+      <div class="hint" id="netNote"></div>
     </div>
 
     <div class="card">
