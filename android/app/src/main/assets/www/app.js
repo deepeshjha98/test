@@ -10,9 +10,11 @@
 (function (root) {
   'use strict';
 
-  const APP_VERSION = '1.3.0';
-  const K = { api: 'jcm.api', key: 'jcm.key', lists: 'jcm.lists', queue: 'jcm.queue', draft: 'jcm.draft', shift: 'jcm.shift' };
+  const APP_VERSION = '1.4.0';
+  const K = { api: 'jcm.api', key: 'jcm.key', lists: 'jcm.lists', queue: 'jcm.queue', draft: 'jcm.draft', shift: 'jcm.shift', rates: 'jcm.rates' };
   const DEFAULT_SHIFT = { start: '08:30', finish: '18:30' };   // मिल का सामान्य समय; ⚙ सेटिंग से बदला जा सकता है
+  // पैसे की दरें — ⚙ सेटिंग से बदली जा सकती हैं
+  const DEFAULT_RATES = { wage: 50, perBag: 3 };   // ₹/मज़दूर-घंटा (दिहाड़ी) और ₹/बोरा (लोडिंग का हिस्सा)
   const MAX_SENT_HISTORY = 300;
   const REQUEST_TIMEOUT_MS = 25000;
 
@@ -351,11 +353,15 @@
         });
 
         // सीधी तुलना — सिर्फ़ साफ़ ढेरों से
-        const cmp = { ok: false, diffPct: 0, verdict: '', enough: false };
+        const cmp = { ok: false, diffPct: 0, verdict: '', slower: '', byPct: 0, enough: false };
         if (B.work.perBag && B.ot.perBag) {
           cmp.ok = true;
           cmp.diffPct = Math.round((B.ot.perBag - B.work.perBag) * 100 / B.work.perBag);
           cmp.verdict = Math.abs(cmp.diffPct) < 5 ? 'same' : (cmp.diffPct > 0 ? 'ot-slower' : 'ot-faster');
+          // "कितना धीमा" हमेशा तेज़ वाले की तुलना में — दोनों दिशाओं में एक जैसा पढ़ा जाए
+          if (cmp.verdict === 'ot-slower') { cmp.slower = 'ot'; cmp.byPct = Math.round((B.ot.perBag - B.work.perBag) * 100 / B.work.perBag); }
+          else if (cmp.verdict === 'ot-faster') { cmp.slower = 'work'; cmp.byPct = Math.round((B.work.perBag - B.ot.perBag) * 100 / B.ot.perBag); }
+          else { cmp.slower = 'same'; cmp.byPct = 0; }
           cmp.enough = B.work.entries >= 5 && B.ot.entries >= 5;   // इससे कम पर नतीजा डगमगाता है
         }
 
@@ -370,6 +376,89 @@
         }
 
         return { shift: shift, buckets: B, compare: cmp, fit: fit, total: items.length };
+      },
+
+      getRates: function () {
+        const v = get(K.rates, null);
+        return (v && isFinite(v.wage) && isFinite(v.perBag) && v.wage >= 0 && v.perBag >= 0) ? v : DEFAULT_RATES;
+      },
+      setRates: function (wage, perBag) {
+        const w = Number(wage), b = Number(perBag);
+        if (!isFinite(w) || w < 0) throw new Error('दिहाड़ी की दर अंक में भरो (₹ प्रति मज़दूर-घंटा)।');
+        if (!isFinite(b) || b < 0) throw new Error('बोरा दर अंक में भरो (₹ प्रति बोरा)।');
+        const v = { wage: w, perBag: b };
+        set(K.rates, v);
+        return v;
+      },
+
+      /* पैसे का हिसाब — मिल की लागत और लेबर की कमाई, दोनों तरफ़ से।
+
+         मिल का ख़र्च एक entry पर:
+           दिहाड़ी  = ₹wage × मज़दूर-घंटे  — पर सिर्फ़ काम के घंटों वाले हिस्से पर
+                     (ओवरटाइम में दिहाड़ी नहीं लगती)
+           बोरा-दर = ₹perBag × बोरे        — हमेशा, दोनों हिस्सों में
+
+         लेबर की कमाई उसी सिक्के का दूसरा पहलू है:
+           काम के घंटों में = दिहाड़ी (जो वैसे भी मिलती) + बोरा-दर का हिस्सा
+           ओवरटाइम में      = सिर्फ़ बोरा-दर का हिस्सा
+         इसीलिए ओवरटाइम में जल्दी ख़त्म करने का दबाव है, काम के घंटों में नहीं —
+         यह हिसाब उसी शक़ को नापता है।                                            */
+      money: function (from, to) {
+        const rates = core.getRates();
+        const shift = core.getShift();
+        const items = core.queue().filter(function (it) {
+          const d = it.entry && it.entry.date;
+          if (!d) return false;
+          if (from && d < from) return false;
+          if (to && d > to) return false;
+          return (Number(it.entry.bags) || 0) > 0 && (it.entry.labour || []).length > 0;
+        });
+
+        const blank = function () {
+          return { entries: 0, bags: 0, labourMin: 0, workLabourMin: 0, otLabourMin: 0,
+                   wage: 0, piece: 0, cost: 0, costPerBag: null, earnPerLabourHour: null, piecePerLabourHour: null };
+        };
+        const B = { work: blank(), ot: blank(), mixed: blank(), all: blank() };
+
+        items.forEach(function (it) {
+          const e = it.entry;
+          const sp = splitShift(e.start, e.finish, shift);
+          if (!sp.total) return;
+          const n = e.labour.length, bags = Number(e.bags) || 0;
+          const wLM = sp.work * n, oLM = sp.ot * n;
+          const wage = rates.wage * wLM / 60;     // दिहाड़ी सिर्फ़ काम के घंटों वाले हिस्से पर
+          const piece = rates.perBag * bags;
+          const key = sp.ot === 0 ? 'work' : sp.work === 0 ? 'ot' : 'mixed';
+          [B[key], B.all].forEach(function (b) {
+            b.entries++; b.bags += bags; b.labourMin += sp.total * n;
+            b.workLabourMin += wLM; b.otLabourMin += oLM;
+            b.wage += wage; b.piece += piece; b.cost += wage + piece;
+          });
+        });
+
+        ['work', 'ot', 'mixed', 'all'].forEach(function (k) {
+          const b = B[k];
+          if (b.bags > 0) b.costPerBag = b.cost / b.bags;
+          if (b.labourMin > 0) {
+            b.earnPerLabourHour = b.cost / (b.labourMin / 60);      // लेबर को कुल कितना, प्रति मज़दूर-घंटा
+            b.piecePerLabourHour = b.piece / (b.labourMin / 60);    // उसमें से सिर्फ़ बोरा-दर वाला हिस्सा
+          }
+        });
+
+        /* सुस्ती की क़ीमत: अगर काम के घंटों वाला काम भी ओवरटाइम की रफ़्तार से होता
+           तो कितने मज़दूर-घंटे बचते, और उनकी दिहाड़ी कितने की थी।
+           मानक = सिर्फ़ पूरी तरह OT वाली entries की रफ़्तार (साफ़ तुलना)।        */
+        const waste = { ok: false, excessLabourMin: 0, rupees: 0, otPerBag: 0, workPerBag: 0 };
+        const pw = B.work, po = B.ot;
+        if (pw.bags > 0 && po.bags > 0 && po.labourMin > 0) {
+          waste.otPerBag = po.labourMin / po.bags;
+          waste.workPerBag = pw.labourMin / pw.bags;
+          waste.excessLabourMin = pw.labourMin - pw.bags * waste.otPerBag;
+          waste.rupees = (waste.excessLabourMin / 60) * rates.wage;
+          waste.ok = true;
+        }
+
+        return { rates: rates, shift: shift, buckets: B, waste: waste, total: items.length };
       },
 
       // ---------- सिर्फ़-फ़ोन (offline) मोड ----------
@@ -604,7 +693,7 @@
     tabs.forEach(function (b) { b.className = b.getAttribute('data-view') === v ? 'on' : ''; });
     if (v === 'list') renderList();
     if (v === 'report') renderReport();
-    if (v === 'settings') { $('api').value = core.getApi(); $('key').value = core.getKey(); shiftInfo(); fillLocalLists(); listsInfo(); dbInfo(); }
+    if (v === 'settings') { $('api').value = core.getApi(); $('key').value = core.getKey(); shiftInfo(); ratesInfo(); fillLocalLists(); listsInfo(); dbInfo(); }
     window.scrollTo(0, 0);
   }
   function listsInfo() {
@@ -671,11 +760,11 @@
       v = '<div class="vd"><div class="say">तुलना अभी नहीं हो सकती</div>' +
           '<div class="sub">पूरी तरह ' + missing + ' में हुई कोई entry नहीं मिली। दोनों तरह की entries आने पर यहाँ जवाब दिखेगा।</div></div>';
     } else {
-      const d = P.compare.diffPct, k = P.compare.verdict;
-      const cls = k === 'ot-slower' ? 'slow' : k === 'ot-faster' ? 'fast' : 'same';
-      const big = k === 'same' ? 'लगभग बराबर' : (d > 0 ? '+' : '') + d + '%';
-      const say = k === 'ot-slower' ? 'ओवरटाइम में हर बोरा पर <b>' + d + '% ज़्यादा</b> मेहनत लगती है'
-                : k === 'ot-faster' ? 'ओवरटाइम में हर बोरा पर <b>' + Math.abs(d) + '% कम</b> मेहनत लगती है'
+      const k = P.compare.slower, pc = P.compare.byPct;
+      const cls = k === 'work' ? 'slow' : k === 'ot' ? 'fast' : 'same';
+      const big = k === 'same' ? 'लगभग बराबर' : '+' + pc + '%';
+      const say = k === 'work' ? '<b>काम के घंटों में</b> हर बोरा पर <b>' + pc + '% ज़्यादा</b> समय लगता है'
+                : k === 'ot' ? '<b>ओवरटाइम में</b> हर बोरा पर <b>' + pc + '% ज़्यादा</b> समय लगता है'
                 : 'काम के घंटों और ओवरटाइम में रफ़्तार लगभग एक जैसी है';
       v = '<div class="vd"><div class="num ' + cls + '">' + big + '</div><div class="say">' + say + '</div>' +
           '<div class="sub">काम के घंटे ' + num(W.perBag) + ' मज़दूर-मिनट/बोरा · ओवरटाइम ' + num(O.perBag) + '</div></div>';
@@ -713,6 +802,8 @@
     }
     $('repMixed').textContent = mx;
 
+    renderMoney();
+
     // ── और विवरण
     const r = core.report($('repFrom').value, $('repTo').value);
     $('repTotal').textContent = hhmm(r.totalMin);
@@ -733,6 +824,56 @@
       ['कुल', hhmm(r.workMin), hhmm(r.otMin), hhmm(r.totalMin)]);
     table($('repTypes'), ['कार्य प्रकार', 'काम', 'ओवरटाइम', 'कुल'], rowsOf(r.types), null);
     table($('repGoods'), ['सामान', 'काम', 'ओवरटाइम', 'कुल'], rowsOf(r.goods), null);
+  }
+
+  function rs(v) {   // ₹1,23,456 — भारतीय अंक-शैली, ऋणात्मक पर − आगे
+    const n = Math.round(v || 0);
+    let t;
+    try { t = Math.abs(n).toLocaleString('en-IN'); } catch (_) { t = String(Math.abs(n)); }
+    return (n < 0 ? '−₹' : '₹') + t;
+  }
+
+  function renderMoney() {
+    const M = core.money($('repFrom').value, $('repTo').value);
+    const W = M.buckets.work, O = M.buckets.ot, X = M.buckets.mixed, A = M.buckets.all;
+    $('rateLine').textContent = 'दिहाड़ी ₹' + M.rates.wage + '/मज़दूर-घंटा (सिर्फ़ काम के घंटों में) · ₹' +
+      M.rates.perBag + '/बोरा (दोनों में)। ⚙ में बदल सकते हो।';
+
+    // सुस्ती की क़ीमत
+    let wb = '';
+    if (M.waste.ok && Math.abs(M.waste.rupees) >= 1) {
+      const bad = M.waste.rupees > 0;
+      wb = '<div class="money"><div class="rs ' + (bad ? 'bad' : 'good') + '">' + rs(Math.abs(M.waste.rupees)) + '</div>' +
+           '<div class="cap">' + (bad
+             ? 'इस अवधि में काम के घंटों की सुस्ती पर लगी दिहाड़ी — अगर वही काम ओवरटाइम की रफ़्तार से होता तो ' +
+               hhmm(Math.abs(M.waste.excessLabourMin)) + ' मज़दूर-घंटे बचते'
+             : 'काम के घंटों में रफ़्तार ओवरटाइम से बेहतर रही — ' + hhmm(Math.abs(M.waste.excessLabourMin)) +
+               ' मज़दूर-घंटे की बचत') + '</div></div>';
+    }
+    $('wasteBox').innerHTML = wb;
+
+    const row = function (lb, a, b, cc, bold) {
+      return '<tr><td>' + esc(lb) + '</td>' +
+        '<td' + (bold ? ' style="font-weight:700"' : '') + '>' + esc(a) + '</td>' +
+        '<td' + (bold ? ' style="font-weight:700' + (cc ? ';color:#ef6c00' : '') + '"' : '') + '>' + esc(b) + '</td></tr>';
+    };
+    const money2 = function (v) { return v == null ? '—' : '₹' + v.toFixed(2); };
+    let h = '<thead><tr><th></th><th>काम के घंटे</th><th>ओवरटाइम</th></tr></thead><tbody>';
+    h += row('दिहाड़ी', rs(W.wage), rs(O.wage));
+    h += row('बोरा-दर', rs(W.piece), rs(O.piece));
+    h += row('मिल की कुल लागत', rs(W.cost), rs(O.cost));
+    h += row('लागत / बोरा', money2(W.costPerBag), money2(O.costPerBag), true, true);
+    h += row('लेबर की कमाई / मज़दूर-घंटा', money2(W.earnPerLabourHour), money2(O.earnPerLabourHour));
+    h += row('उसमें बोरा-दर से', money2(W.piecePerLabourHour), money2(O.piecePerLabourHour), true, true);
+    $('repMoney').innerHTML = h + '</tbody>';
+
+    let note = '';
+    if (X.entries) note += 'शिफ्ट के आर-पार फैली ' + X.entries + ' entries इस तालिका में अलग नहीं दिखतीं, पर कुल में गिनी गई हैं — ' +
+      'उनकी दिहाड़ी सिर्फ़ काम के घंटों वाले हिस्से पर लगी। ';
+    if (A.cost) note += 'इस अवधि में कुल ' + rs(A.cost) + ' (दिहाड़ी ' + rs(A.wage) + ' + बोरा-दर ' + rs(A.piece) + ')। ';
+    note += 'ध्यान: "लागत/बोरा" ओवरटाइम में हमेशा कम दिखेगी क्योंकि वहाँ दिहाड़ी लगती ही नहीं — ' +
+            'यह रफ़्तार का सबूत नहीं। रफ़्तार ऊपर वाले समय के आँकड़े से देखिए।';
+    $('moneyNote').textContent = note;
   }
 
   // ---- मोड के हिसाब से hint
@@ -839,6 +980,19 @@
     const w = (toMin(sh.finish) - toMin(sh.start) + 1440) % 1440;
     $('shiftInfo').textContent = 'अभी: ' + sh.start + ' – ' + sh.finish + ' (' + hhmm(w) + ' घंटे)। इसके बाहर का समय ओवरटाइम।';
   }
+  function ratesInfo() {
+    const r = core.getRates();
+    $('rWage').value = r.wage; $('rBag').value = r.perBag;
+    $('ratesInfo').textContent = 'अभी: ₹' + r.wage + '/मज़दूर-घंटा दिहाड़ी · ₹' + r.perBag + '/बोरा';
+  }
+  $('saveRates').onclick = function () {
+    try {
+      core.setRates($('rWage').value, $('rBag').value);
+      ratesInfo();
+      toast('✔ दरें save हुईं', 'ok');
+    } catch (e) { toast(e.message, 'err', 4000); }
+  };
+
   $('saveShift').onclick = function () {
     try {
       core.setShift($('shStart').value, $('shFinish').value);

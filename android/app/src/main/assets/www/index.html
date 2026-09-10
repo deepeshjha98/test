@@ -86,6 +86,10 @@
     .vd .say { font-size: 15px; margin-top: 6px; }
     .vd .sub { font-size: 13px; color: var(--muted); margin-top: 8px; }
     .warn2 { font-size: 13px; color: var(--amber); font-weight: 600; margin-top: 10px; }
+    .money { text-align: center; padding: 10px 0 2px; }
+    .money .rs { font-size: 28px; font-weight: 800; line-height: 1.15; }
+    .money .rs.bad { color: var(--red); } .money .rs.good { color: var(--green); }
+    .money .cap { font-size: 13px; color: var(--muted); margin-top: 4px; }
     .rep { width: 100%; border-collapse: collapse; font-size: 14px; }
     .rep th, .rep td { padding: 7px 4px; text-align: right; border-bottom: 1px solid var(--line); white-space: nowrap; }
     .rep th { font-size: 12px; color: var(--muted); font-weight: 600; }
@@ -184,6 +188,14 @@
     </div>
 
     <div class="card">
+      <label style="margin-top:0">पैसे का हिसाब</label>
+      <div class="hint" style="margin-top:0" id="rateLine"></div>
+      <div id="wasteBox"></div>
+      <div class="scroll" style="margin-top:10px"><table class="rep" id="repMoney"></table></div>
+      <div class="hint" id="moneyNote"></div>
+    </div>
+
+    <div class="card">
       <button class="btn ghost" id="moreBtn" style="margin-top:0">और विवरण ▾</button>
       <div id="moreBox" hidden>
         <div class="big" style="margin-top:12px">
@@ -226,6 +238,18 @@
       </div>
       <button class="btn blue" id="saveShift">शिफ्ट save करो</button>
       <div class="hint" id="shiftInfo"></div>
+    </div>
+
+    <div class="card">
+      <label style="margin-top:0">पैसे की दरें</label>
+      <div class="hint" style="margin-top:0">विश्लेषण इन्हीं से लागत और कमाई गिनता है।</div>
+      <div class="row2">
+        <div><label>दिहाड़ी ₹ / मज़दूर-घंटा</label><input type="number" id="rWage" inputmode="decimal" min="0" step="1" placeholder="50"></div>
+        <div><label>₹ / बोरा</label><input type="number" id="rBag" inputmode="decimal" min="0" step="0.5" placeholder="3"></div>
+      </div>
+      <div class="hint">दिहाड़ी सिर्फ़ काम के घंटों वाले हिस्से पर लगती है — ओवरटाइम में नहीं। बोरा-दर दोनों में।</div>
+      <button class="btn blue" id="saveRates">दरें save करो</button>
+      <div class="hint" id="ratesInfo"></div>
     </div>
 
     <div class="card">
