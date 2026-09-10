@@ -67,6 +67,15 @@
                padding-bottom: env(safe-area-inset-bottom); z-index: 5; }
     nav.tabs button { flex: 1; border: 0; background: none; padding: 8px 4px 6px; font-size: 12px; color: var(--muted); position: relative; }
     nav.tabs button .ic { display: block; font-size: 22px; line-height: 1.1; }
+    nav.tabs button { font-size: 11px; }
+    .lrow { border: 1px solid var(--line); border-radius: 10px; padding: 10px; margin-bottom: 10px; background: #fafbfc; }
+    .lrow .top { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
+    .lrow .top b { flex: 1; font-size: 14px; }
+    .xbtn { background: #fff; color: var(--red); border: 1px solid var(--red); border-radius: 8px;
+            padding: 5px 10px; font-size: 13px; font-weight: 700; }
+    .row3 { display: flex; gap: 8px; }
+    .row3 > div { flex: 1; min-width: 0; }
+    .res { font-size: 14px; font-weight: 700; color: var(--blue); margin-top: 8px; }
     nav.tabs button.on { color: var(--blue); font-weight: 700; }
     .badge { position: absolute; top: 4px; right: 22%; background: var(--red); color: #fff; border-radius: 10px; font-size: 11px; padding: 1px 6px; font-weight: 700; }
     .badge:empty { display: none; }
@@ -174,6 +183,48 @@
     <div class="card" style="margin-top:12px" id="items"></div>
   </section>
 
+  <!-- ================= खरीद ================= -->
+  <section id="view-buy" hidden>
+    <div id="buyListWrap">
+      <button class="btn" id="newBuy" style="margin-top:0">➕ नई खरीद (ट्रक)</button>
+      <div class="card" style="margin-top:12px">
+        <label style="margin-top:0">सामान-वार खरीद रेट</label>
+        <div class="hint" style="margin-top:0">सारे ट्रक जोड़कर — ख़र्च समेत असली रेट।</div>
+        <div class="scroll"><table class="rep" id="buyRates"></table></div>
+      </div>
+      <div class="card" id="buyList"></div>
+    </div>
+
+    <div id="buyFormWrap" hidden>
+      <div class="card">
+        <div class="row2">
+          <div><label style="margin-top:0">दिनांक</label><input type="date" id="bDate"></div>
+          <div><label style="margin-top:0">गाड़ी नंबर</label><input type="text" id="bVeh" placeholder="BR06 1234"></div>
+        </div>
+      </div>
+
+      <div id="bLines"></div>
+      <button class="btn ghost" id="addLine">➕ सामान जोड़ो</button>
+
+      <div class="card" style="margin-top:12px">
+        <label style="margin-top:0">पूरे ट्रक के साझा ख़र्च</label>
+        <div class="hint" style="margin-top:0">भाड़ा, अनलोडिंग… ये सब सामानों पर बँटेंगे।</div>
+        <div id="bExp"></div>
+        <button class="btn ghost sm" id="addTripExp" style="width:100%">➕ ख़र्च जोड़ो</button>
+        <label>बँटवारा किस हिसाब से?</label>
+        <div class="chips2" id="bBasis">
+          <button data-basis="weight" class="on">वज़न</button>
+          <button data-basis="value">मूल्य</button>
+          <button data-basis="bags">बोरे</button>
+        </div>
+      </div>
+
+      <div class="card" id="bResult"></div>
+      <button class="btn" id="saveBuy">✔ खरीद save करो</button>
+      <button class="btn ghost" id="cancelBuy">रद्द करो</button>
+    </div>
+  </section>
+
   <!-- ================= विश्लेषण ================= -->
   <section id="view-report" hidden>
     <div class="card">
@@ -272,6 +323,17 @@
     </div>
 
     <div class="card">
+      <label style="margin-top:0">खरीद की लिस्ट (हर लाइन में एक नाम)</label>
+      <div class="hint" style="margin-top:0">📦 खरीद में इन्हीं में से चुनना होगा।</div>
+      <label>सामान</label>
+      <textarea id="blItems" rows="4" placeholder="चोकर&#10;चना&#10;धान"></textarea>
+      <label>सप्लायर</label>
+      <textarea id="blParties" rows="4" placeholder="सप्लायर का नाम"></textarea>
+      <button class="btn blue" id="saveBuyLists">खरीद की लिस्ट save करो</button>
+      <div class="hint" id="buyListsInfo"></div>
+    </div>
+
+    <div class="card">
       <label>लोकल लिस्ट (बिना internet — हर लाइन में एक नाम)</label>
       <div class="hint" style="margin-top:0">Sheet न हो तो यहीं भर दो। App इन्हीं से चलेगी।</div>
 
@@ -325,6 +387,7 @@
 <nav class="tabs">
   <button data-view="entry" class="on"><span class="ic">➕</span>नई entry</button>
   <button data-view="list"><span class="ic">📋</span>सूची<span class="badge" id="badge"></span></button>
+  <button data-view="buy"><span class="ic">📦</span>खरीद</button>
   <button data-view="report"><span class="ic">📊</span>विश्लेषण</button>
   <button data-view="settings"><span class="ic">⚙</span>सेटिंग</button>
 </nav>

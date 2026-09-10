@@ -10,8 +10,8 @@
 (function (root) {
   'use strict';
 
-  const APP_VERSION = '1.6.0';
-  const K = { api: 'jcm.api', key: 'jcm.key', lists: 'jcm.lists', queue: 'jcm.queue', draft: 'jcm.draft', shift: 'jcm.shift', rates: 'jcm.rates' };
+  const APP_VERSION = '1.7.0';
+  const K = { api: 'jcm.api', key: 'jcm.key', lists: 'jcm.lists', queue: 'jcm.queue', draft: 'jcm.draft', shift: 'jcm.shift', rates: 'jcm.rates', buys: 'jcm.buys', buyLists: 'jcm.buylists' };
   const DEFAULT_SHIFT = { start: '08:30', finish: '18:30' };   // मिल का सामान्य समय; ⚙ सेटिंग से बदला जा सकता है
   // पैसे की दरें — ⚙ सेटिंग से बदली जा सकती हैं
   const DEFAULT_RATES = { wage: 50, perBag: 3 };   // ₹/मज़दूर-घंटा (दिहाड़ी) और ₹/बोरा (लोडिंग का हिस्सा)
@@ -110,6 +110,90 @@
     }
     if (!apk) return null;
     return { code: code, name: String(rel.name || rel.tag_name), url: apk };
+  }
+
+  // ══════════════════════ खरीद का हिसाब (purchase cost) ══════════════════════
+  /* एक "खरीद" = एक ट्रक। उसमें एक या कई lines — हर line यानी एक सामान, एक सप्लायर से।
+     कुछ सामान बोरे के भाव आता है (चोकर: 35kg बोरा ₹1000), कुछ क्विंटल के (चना ₹7050/क्विं)।
+     एक ही सामान अलग-अलग सप्लायर या अलग-अलग वज़न के बोरे में आए तो वे अलग lines हैं।
+
+     ख़र्च दो जगह लगते हैं:
+       line के अपने ख़र्च   — उसी सामान के (गद्दी, टैक्स…)
+       ट्रक के साझा ख़र्च   — भाड़ा, अनलोडिंग… ये सब lines पर बँटते हैं
+     बँटवारा वज़न के अनुपात में होता है (भाड़े का असली आधार वही है), पर
+     मूल्य या बोरों के अनुपात में भी किया जा सकता है।                              */
+
+  const EXPENSE_KINDS = ['flat', 'perQuintal', 'perBag', 'percent'];
+
+  // एक ख़र्च की रक़म — जिस चीज़ पर लग रहा है उसके हिसाब से
+  function expenseAmount(ex, ctx) {
+    const v = Number(ex && ex.value) || 0;
+    const kg = Number(ctx && ctx.kg) || 0;
+    const bags = Number(ctx && ctx.bags) || 0;
+    const basic = Number(ctx && ctx.basic) || 0;
+    switch (ex && ex.kind) {
+      case 'perQuintal': return v * (kg / 100);
+      case 'perBag': return v * bags;
+      case 'percent': return v * basic / 100;
+      default: return v;                                  // सीधी रक़म
+    }
+  }
+  function sumExpenses(list, ctx) {
+    return (Array.isArray(list) ? list : []).reduce(function (t, ex) { return t + expenseAmount(ex, ctx); }, 0);
+  }
+
+  // एक line का वज़न और मूल भाव
+  function lineBase(l) {
+    const bags = Math.max(0, Number(l && l.bags) || 0);
+    if (l && l.mode === 'quintal') {
+      const kg = Math.max(0, Number(l.qtl) || 0) * 100;
+      return { bags: bags, kg: kg, basic: (kg / 100) * (Number(l.rate) || 0) };
+    }
+    const bagKg = Math.max(0, Number(l && l.bagKg) || 0);
+    return { bags: bags, kg: bags * bagKg, basic: bags * (Number(l && l.rate) || 0) };
+  }
+
+  /* पूरा हिसाब। लौटाता है हर line का असली रेट (₹/क्विंटल और ₹/बोरा) और ट्रक का जोड़। */
+  function purchaseCalc(p) {
+    p = p || {};
+    const basis = (p.basis === 'value' || p.basis === 'bags') ? p.basis : 'weight';
+    const rows = (Array.isArray(p.lines) ? p.lines : []).map(function (l) {
+      const b = lineBase(l);
+      const lineExp = sumExpenses(l && l.expenses, b);
+      return {
+        item: (l && l.item) || '', party: (l && l.party) || '', mode: (l && l.mode) === 'quintal' ? 'quintal' : 'bag',
+        bags: b.bags, kg: b.kg, qtl: b.kg / 100, rate: Number(l && l.rate) || 0,
+        basic: b.basic, lineExp: lineExp, value: b.basic + lineExp,
+        share: 0, total: 0, perKg: null, perQuintal: null, perBag: null
+      };
+    });
+
+    const tot = rows.reduce(function (t, r) {
+      t.bags += r.bags; t.kg += r.kg; t.basic += r.basic; t.lineExp += r.lineExp; t.value += r.value; return t;
+    }, { bags: 0, kg: 0, basic: 0, lineExp: 0, value: 0 });
+
+    // साझा ख़र्च — पूरे ट्रक के जोड़ पर लगते हैं
+    const tripExp = sumExpenses(p.expenses, { kg: tot.kg, bags: tot.bags, basic: tot.basic });
+
+    // बँटवारा
+    const weightOf = function (r) { return basis === 'value' ? r.value : basis === 'bags' ? r.bags : r.kg; };
+    const basisTotal = rows.reduce(function (t, r) { return t + weightOf(r); }, 0);
+    rows.forEach(function (r) {
+      // आधार शून्य हो (जैसे वज़न भरा ही न हो) तो बराबर-बराबर बाँटो, ताकि ख़र्च गुम न हो
+      r.share = basisTotal > 0 ? tripExp * weightOf(r) / basisTotal : (rows.length ? tripExp / rows.length : 0);
+      r.total = r.value + r.share;
+      if (r.kg > 0) { r.perKg = r.total / r.kg; r.perQuintal = r.perKg * 100; }
+      if (r.bags > 0) r.perBag = r.total / r.bags;
+    });
+
+    const grand = tot.value + tripExp;
+    return {
+      basis: basis, lines: rows,
+      bags: tot.bags, kg: tot.kg, qtl: tot.kg / 100,
+      basic: tot.basic, lineExp: tot.lineExp, tripExp: tripExp, total: grand,
+      perKg: tot.kg > 0 ? grand / tot.kg : null,
+      perQuintal: tot.kg > 0 ? (grand / tot.kg) * 100 : null
+    };
   }
 
   // server जैसी ही validation (server authoritative है; यह user को तुरंत बताने के लिए)
@@ -503,6 +587,87 @@
         return { rates: rates, shift: shift, buckets: B, waste: waste, total: items.length };
       },
 
+      // ---------- खरीद (purchase) ----------
+      buyLists: function () {
+        const v = get(K.buyLists, null);
+        return { items: (v && v.items) || [], parties: (v && v.parties) || [] };
+      },
+      setBuyLists: function (items, parties) {
+        const v = { items: cleanNames(items), parties: cleanNames(parties) };
+        set(K.buyLists, v);
+        return v;
+      },
+
+      buys: function () { return get(K.buys, []); },
+
+      /* खरीद save — नई हो तो id मिलती है, पुरानी हो तो जगह पर बदल जाती है।
+         हिसाब यहीं जमाकर रख लिया जाता है ताकि बाद में दरें बदलें तो भी
+         पुरानी खरीद का रिकॉर्ड वही रहे जो उस दिन था।                      */
+      saveBuy: function (b) {
+        if (!b || !Array.isArray(b.lines) || !b.lines.length) throw new Error('कम से कम एक सामान डालो।');
+        const calc = purchaseCalc(b);
+        if (!(calc.kg > 0)) throw new Error('वज़न भरो — बोरे × kg, या क्विंटल।');
+        const clean = {
+          id: b.id || uuid(),
+          date: b.date || todayLocal(now()),
+          vehicle: String(b.vehicle || '').trim(),
+          basis: calc.basis,
+          lines: b.lines.map(function (l) {
+            return {
+              item: String(l.item || '').trim(), party: String(l.party || '').trim(),
+              mode: l.mode === 'quintal' ? 'quintal' : 'bag',
+              bags: Number(l.bags) || 0, bagKg: Number(l.bagKg) || 0, qtl: Number(l.qtl) || 0,
+              rate: Number(l.rate) || 0,
+              expenses: (l.expenses || []).map(function (x) {
+                return { name: String(x.name || '').trim(), kind: EXPENSE_KINDS.indexOf(x.kind) >= 0 ? x.kind : 'flat', value: Number(x.value) || 0 };
+              })
+            };
+          }),
+          expenses: (b.expenses || []).map(function (x) {
+            return { name: String(x.name || '').trim(), kind: EXPENSE_KINDS.indexOf(x.kind) >= 0 ? x.kind : 'flat', value: Number(x.value) || 0 };
+          }),
+          savedAt: now().toISOString()
+        };
+        const all = core.buys();
+        const i = all.findIndex(function (x) { return x.id === clean.id; });
+        if (i >= 0) all[i] = clean; else all.unshift(clean);
+        all.sort(function (a, b2) { return String(b2.date).localeCompare(String(a.date)) || String(b2.savedAt).localeCompare(String(a.savedAt)); });
+        set(K.buys, all);
+        return clean;
+      },
+
+      removeBuy: function (id) {
+        const all = core.buys();
+        const i = all.findIndex(function (x) { return x.id === id; });
+        if (i < 0) return false;
+        all.splice(i, 1); set(K.buys, all); return true;
+      },
+
+      calcBuy: function (b) { return purchaseCalc(b); },
+
+      /* किसी सामान का औसत खरीद रेट — कई ट्रकों को जोड़कर।
+         हर line का अपना रेट अलग हो सकता है, इसलिए औसत वज़न के भार से निकाला जाता है। */
+      buyRates: function (from, to) {
+        const byItem = {};
+        core.buys().forEach(function (b) {
+          if (from && b.date < from) return;
+          if (to && b.date > to) return;
+          purchaseCalc(b).lines.forEach(function (r) {
+            if (!(r.kg > 0)) return;
+            const k = r.item || '(बिना नाम)';
+            const e = byItem[k] || (byItem[k] = { item: k, kg: 0, bags: 0, total: 0, lines: 0, parties: {} });
+            e.kg += r.kg; e.bags += r.bags; e.total += r.total; e.lines++;
+            if (r.party) e.parties[r.party] = true;
+          });
+        });
+        return Object.keys(byItem).map(function (k) {
+          const e = byItem[k];
+          return { item: e.item, lines: e.lines, kg: e.kg, qtl: e.kg / 100, bags: e.bags, total: e.total,
+                   perQuintal: e.total / (e.kg / 100), perBag: e.bags > 0 ? e.total / e.bags : null,
+                   parties: Object.keys(e.parties).sort() };
+        }).sort(function (a, b2) { return b2.total - a.total; });
+      },
+
       // ---------- सिर्फ़-फ़ोन (offline) मोड ----------
       // कोई Web App URL सेट नहीं = app पूरी तरह local database पर चलती है।
       localOnly: function () { return !core.getApi(); },
@@ -577,7 +742,7 @@
     return core;
   }
 
-  const api = { createCore: createCore, validate: validate, uuid: uuid, todayLocal: todayLocal, durationText: durationText, fmtDate: fmtDate, cleanNames: cleanNames, pickUpdate: pickUpdate, splitShift: splitShift, hhmm: hhmm, DEFAULT_SHIFT: DEFAULT_SHIFT, APP_VERSION: APP_VERSION };
+  const api = { createCore: createCore, validate: validate, uuid: uuid, todayLocal: todayLocal, durationText: durationText, fmtDate: fmtDate, cleanNames: cleanNames, pickUpdate: pickUpdate, purchaseCalc: purchaseCalc, expenseAmount: expenseAmount, EXPENSE_KINDS: EXPENSE_KINDS, splitShift: splitShift, hhmm: hhmm, DEFAULT_SHIFT: DEFAULT_SHIFT, APP_VERSION: APP_VERSION };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.JCM = api;
 
@@ -744,12 +909,19 @@
   // ---- views
   function showView(v) {
     view = v;
-    ['entry', 'list', 'report', 'settings'].forEach(function (x) { $('view-' + x).hidden = (x !== v); });
+    ['entry', 'list', 'buy', 'report', 'settings'].forEach(function (x) { $('view-' + x).hidden = (x !== v); });
     const tabs = document.querySelectorAll('nav.tabs button');
     tabs.forEach(function (b) { b.className = b.getAttribute('data-view') === v ? 'on' : ''; });
     if (v === 'list') renderList();
     if (v === 'report') renderReport();
-    if (v === 'settings') { $('api').value = core.getApi(); $('key').value = core.getKey(); shiftInfo(); ratesInfo(); fillLocalLists(); listsInfo(); dbInfo(); }
+    if (v === 'buy') { if (!draftBuy) { showBuyForm(false); renderBuyList(); } }
+    if (v === 'settings') {
+      $('api').value = core.getApi(); $('key').value = core.getKey();
+      shiftInfo(); ratesInfo(); fillLocalLists(); listsInfo(); dbInfo();
+      const bl = core.buyLists();
+      $('blItems').value = bl.items.join('\n'); $('blParties').value = bl.parties.join('\n');
+      $('buyListsInfo').textContent = bl.items.length + ' सामान · ' + bl.parties.length + ' सप्लायर';
+    }
     window.scrollTo(0, 0);
   }
   function listsInfo() {
@@ -995,6 +1167,131 @@
     else if (state === 'error') { $('upBtn').disabled = false; $('upBtn').textContent = '⬆ अपडेट करें'; toast(msg || 'अपडेट नहीं हो पाई', 'err', 5000); }
   };
 
+  // ══════════════════ खरीद की screen ══════════════════
+  let draftBuy = null;
+  const KIND_LABEL = { flat: 'सीधी रक़म ₹', perQuintal: '₹ / क्विंटल', perBag: '₹ / बोरा', percent: '% मूल पर' };
+
+  function newLine() { return { item: '', party: '', mode: 'bag', bags: '', bagKg: '', qtl: '', rate: '', expenses: [] }; }
+  function blankBuy() {
+    return { date: todayLocal(), vehicle: '', basis: 'weight', lines: [newLine()], expenses: [] };
+  }
+
+  function optsHtml(list, sel) {
+    let h = '<option value="">-- चुनो --</option>';
+    (list || []).forEach(function (n) { h += '<option value="' + esc(n) + '"' + (n === sel ? ' selected' : '') + '>' + esc(n) + '</option>'; });
+    return h;
+  }
+  function kindOpts(sel) {
+    let h = '';
+    EXPENSE_KINDS.forEach(function (k) { h += '<option value="' + k + '"' + (k === sel ? ' selected' : '') + '>' + esc(KIND_LABEL[k]) + '</option>'; });
+    return h;
+  }
+  function expRows(list, prefix) {
+    let h = '';
+    (list || []).forEach(function (x, i) {
+      h += '<div class="row3" style="margin-top:6px">' +
+        '<div><input type="text" placeholder="ख़र्च का नाम" data-e="' + prefix + '" data-i="' + i + '" data-f="name" value="' + esc(x.name || '') + '"></div>' +
+        '<div><select data-e="' + prefix + '" data-i="' + i + '" data-f="kind">' + kindOpts(x.kind) + '</select></div>' +
+        '<div style="flex:0 0 84px"><input type="number" inputmode="decimal" step="any" placeholder="0" data-e="' + prefix + '" data-i="' + i + '" data-f="value" value="' + esc(x.value === '' || x.value == null ? '' : x.value) + '"></div>' +
+        '<button class="xbtn" data-rmexp="' + prefix + '" data-i="' + i + '">✕</button></div>';
+    });
+    return h;
+  }
+
+  function renderBuyForm() {
+    const L = core.buyLists();
+    $('bDate').value = draftBuy.date;
+    $('bVeh').value = draftBuy.vehicle;
+
+    let h = '';
+    draftBuy.lines.forEach(function (l, i) {
+      const bag = l.mode !== 'quintal';
+      h += '<div class="card lrow">' +
+        '<div class="top"><b>सामान ' + (i + 1) + '</b>' +
+          (draftBuy.lines.length > 1 ? '<button class="xbtn" data-rmline="' + i + '">✕ हटाओ</button>' : '') + '</div>' +
+        '<div class="row2">' +
+          '<div><label style="margin-top:0">सामान</label><select data-l="' + i + '" data-f="item">' + optsHtml(L.items, l.item) + '</select></div>' +
+          '<div><label style="margin-top:0">सप्लायर</label><select data-l="' + i + '" data-f="party">' + optsHtml(L.parties, l.party) + '</select></div>' +
+        '</div>' +
+        '<div class="chips2" style="margin-top:10px">' +
+          '<button data-mode="' + i + ':bag"' + (bag ? ' class="on"' : '') + '>बोरे के भाव</button>' +
+          '<button data-mode="' + i + ':quintal"' + (!bag ? ' class="on"' : '') + '>क्विंटल के भाव</button>' +
+        '</div>' +
+        (bag
+          ? '<div class="row3"><div><label>बोरे</label><input type="number" inputmode="numeric" step="any" data-l="' + i + '" data-f="bags" value="' + esc(l.bags) + '"></div>' +
+            '<div><label>एक बोरा kg</label><input type="number" inputmode="decimal" step="any" data-l="' + i + '" data-f="bagKg" value="' + esc(l.bagKg) + '"></div>' +
+            '<div><label>₹ / बोरा</label><input type="number" inputmode="decimal" step="any" data-l="' + i + '" data-f="rate" value="' + esc(l.rate) + '"></div></div>'
+          : '<div class="row3"><div><label>क्विंटल</label><input type="number" inputmode="decimal" step="any" data-l="' + i + '" data-f="qtl" value="' + esc(l.qtl) + '"></div>' +
+            '<div><label>बोरे (वैकल्पिक)</label><input type="number" inputmode="numeric" step="any" data-l="' + i + '" data-f="bags" value="' + esc(l.bags) + '"></div>' +
+            '<div><label>₹ / क्विंटल</label><input type="number" inputmode="decimal" step="any" data-l="' + i + '" data-f="rate" value="' + esc(l.rate) + '"></div></div>') +
+        '<label>इसी सामान के ख़र्च (गद्दी, टैक्स…)</label>' + expRows(l.expenses, 'L' + i) +
+        '<button class="btn ghost sm" data-addexp="' + i + '" style="width:100%">➕ ख़र्च</button>' +
+        '<div class="res" id="lres' + i + '"></div>' +
+      '</div>';
+    });
+    $('bLines').innerHTML = h;
+    $('bExp').innerHTML = expRows(draftBuy.expenses, 'T');
+    document.querySelectorAll('#bBasis button').forEach(function (b) {
+      b.className = b.getAttribute('data-basis') === draftBuy.basis ? 'on' : '';
+    });
+    recalcBuy();
+  }
+
+  function recalcBuy() {
+    const r = core.calcBuy(draftBuy);
+    r.lines.forEach(function (x, i) {
+      const el = $('lres' + i);
+      if (!el) return;
+      el.textContent = x.kg > 0
+        ? x.qtl.toFixed(2) + ' क्विं · मूल ' + rs(x.basic) + (x.lineExp ? ' + ख़र्च ' + rs(x.lineExp) : '') +
+          (x.share ? ' + भाड़े का हिस्सा ' + rs(x.share) : '') +
+          ' → ' + rs(x.perQuintal) + '/क्विं' + (x.perBag != null ? ' · ' + rs(x.perBag) + '/बोरा' : '')
+        : 'वज़न और रेट भरो';
+    });
+    let h = '<label style="margin-top:0">नतीजा</label>';
+    if (!(r.kg > 0)) { h += '<div class="empty">वज़न भरते ही यहाँ असली रेट दिखने लगेगा।</div>'; }
+    else {
+      h += '<div class="scroll"><table class="rep"><thead><tr><th>सामान</th><th>क्विंटल</th><th>₹/क्विं</th><th>₹/बोरा</th></tr></thead><tbody>';
+      r.lines.forEach(function (x) {
+        h += '<tr><td>' + esc(x.item || '—') + (x.party ? '<br><span style="color:#6b7480;font-size:12px">' + esc(x.party) + '</span>' : '') + '</td>' +
+          '<td>' + x.qtl.toFixed(2) + '</td>' +
+          '<td style="font-weight:700">' + esc(x.perQuintal == null ? '—' : rs(x.perQuintal)) + '</td>' +
+          '<td>' + esc(x.perBag == null ? '—' : rs(x.perBag)) + '</td></tr>';
+      });
+      h += '</tbody></table></div>' +
+        '<div class="kv" style="margin-top:8px">कुल ' + r.qtl.toFixed(2) + ' क्विंटल · ' + r.bags + ' बोरे<br>' +
+        'मूल ' + rs(r.basic) + ' + सामान के ख़र्च ' + rs(r.lineExp) + ' + साझा ख़र्च ' + rs(r.tripExp) +
+        ' = <b>' + rs(r.total) + '</b></div>';
+    }
+    $('bResult').innerHTML = h;
+  }
+
+  function renderBuyList() {
+    const rows = core.buyRates('', '');
+    table($('buyRates'), ['सामान', 'क्विंटल', '₹/क्विं', '₹/बोरा'],
+      rows.map(function (x) { return [x.item, x.qtl.toFixed(2), rs(x.perQuintal), x.perBag == null ? '—' : rs(x.perBag)]; }), null);
+
+    const all = core.buys();
+    const box = $('buyList');
+    if (!all.length) { box.innerHTML = '<div class="empty">अभी कोई खरीद दर्ज नहीं।</div>'; return; }
+    let h = '<label style="margin-top:0">दर्ज खरीद</label>';
+    all.forEach(function (b) {
+      const r = core.calcBuy(b);
+      h += '<div class="item"><div class="t"><span>' + esc(fmtDate(b.date)) + (b.vehicle ? ' · ' + esc(b.vehicle) : '') +
+        '</span><span class="st sent">' + esc(rs(r.total)) + '</span></div>';
+      r.lines.forEach(function (x) {
+        h += '<div class="s">' + esc(x.item || '—') + (x.party ? ' · ' + esc(x.party) : '') + ' — ' +
+          x.qtl.toFixed(2) + ' क्विं · <b>' + esc(x.perQuintal == null ? '—' : rs(x.perQuintal)) + '/क्विं</b>' +
+          (x.perBag != null ? ' · ' + esc(rs(x.perBag)) + '/बोरा' : '') + '</div>';
+      });
+      h += '<div><button class="btn ghost sm" data-editbuy="' + esc(b.id) + '">✎ खोलो</button>' +
+           '<button class="btn danger sm" data-delbuy="' + esc(b.id) + '">🗑 हटाओ</button></div></div>';
+    });
+    box.innerHTML = h;
+  }
+
+  function showBuyForm(on) { $('buyFormWrap').hidden = !on; $('buyListWrap').hidden = on; }
+
   // ---- मोड के हिसाब से hint
   function modeHints() {
     $('saveHint').textContent = core.localOnly()
@@ -1091,6 +1388,92 @@
     N.downloadAndInstall(pendingUpdate.url);
   };
   $('checkUpdate').onclick = function () { checkUpdate(true); };
+
+  // ---- खरीद के बटन
+  $('newBuy').onclick = function () { draftBuy = blankBuy(); renderBuyForm(); showBuyForm(true); window.scrollTo(0, 0); };
+  $('cancelBuy').onclick = function () { draftBuy = null; showBuyForm(false); renderBuyList(); };
+  $('addLine').onclick = function () { draftBuy.lines.push(newLine()); renderBuyForm(); };
+  $('addTripExp').onclick = function () { draftBuy.expenses.push({ name: '', kind: 'flat', value: '' }); renderBuyForm(); };
+  ['bDate', 'bVeh'].forEach(function (id) {
+    $(id).addEventListener('input', function () { draftBuy.date = $('bDate').value; draftBuy.vehicle = $('bVeh').value; });
+  });
+  document.querySelectorAll('#bBasis button').forEach(function (b) {
+    b.onclick = function () { draftBuy.basis = b.getAttribute('data-basis'); renderBuyForm(); };
+  });
+
+  /* form के अंदर के सारे खाने एक ही जगह से सँभाले जाते हैं (event delegation)।
+     टाइप करते समय सिर्फ़ नतीजा दुबारा बनता है, पूरा form नहीं — वरना हर अक्षर पर
+     keyboard बंद हो जाता और cursor कूदता। ढाँचा बदले (row जुड़े/हटे) तभी पूरा form। */
+  function lineExpList(prefix) {
+    if (prefix === 'T') return draftBuy.expenses;
+    const i = parseInt(prefix.slice(1), 10);
+    return draftBuy.lines[i] ? draftBuy.lines[i].expenses : [];
+  }
+  $('buyFormWrap').addEventListener('input', function (ev) {
+    const t = ev.target;
+    if (!t) return;
+    if (t.hasAttribute('data-l')) {
+      const l = draftBuy.lines[parseInt(t.getAttribute('data-l'), 10)];
+      if (l) { l[t.getAttribute('data-f')] = t.value; recalcBuy(); }
+    } else if (t.hasAttribute('data-e')) {
+      const list = lineExpList(t.getAttribute('data-e'));
+      const x = list[parseInt(t.getAttribute('data-i'), 10)];
+      if (x) { x[t.getAttribute('data-f')] = t.value; recalcBuy(); }
+    }
+  });
+  $('buyFormWrap').addEventListener('change', function (ev) {   // select वाले
+    const t = ev.target;
+    if (t && (t.hasAttribute('data-l') || t.hasAttribute('data-e'))) {
+      const e = new Event('input', { bubbles: true });
+      t.dispatchEvent(e);
+    }
+  });
+  $('buyFormWrap').addEventListener('click', function (ev) {
+    const t = ev.target.closest ? ev.target.closest('[data-rmline],[data-addexp],[data-rmexp],[data-mode]') : null;
+    if (!t) return;
+    if (t.hasAttribute('data-rmline')) {
+      if (!confirm('यह सामान हटाना है?')) return;
+      draftBuy.lines.splice(parseInt(t.getAttribute('data-rmline'), 10), 1);
+    } else if (t.hasAttribute('data-addexp')) {
+      const l = draftBuy.lines[parseInt(t.getAttribute('data-addexp'), 10)];
+      if (l) l.expenses.push({ name: '', kind: 'percent', value: '' });
+    } else if (t.hasAttribute('data-rmexp')) {
+      lineExpList(t.getAttribute('data-rmexp')).splice(parseInt(t.getAttribute('data-i'), 10), 1);
+    } else if (t.hasAttribute('data-mode')) {
+      const p = t.getAttribute('data-mode').split(':');
+      const l = draftBuy.lines[parseInt(p[0], 10)];
+      if (l) l.mode = p[1];
+    }
+    renderBuyForm();
+  });
+
+  $('saveBuy').onclick = function () {
+    try {
+      core.saveBuy(draftBuy);
+      draftBuy = null; showBuyForm(false); renderBuyList();
+      toast('✔ खरीद save हो गई', 'ok');
+    } catch (e) { toast(e.message, 'err', 4000); }
+  };
+
+  $('buyList').addEventListener('click', function (ev) {
+    const t = ev.target.closest ? ev.target.closest('[data-editbuy],[data-delbuy]') : null;
+    if (!t) return;
+    if (t.hasAttribute('data-delbuy')) {
+      if (!confirm('यह पूरी खरीद हटानी है?')) return;
+      core.removeBuy(t.getAttribute('data-delbuy')); renderBuyList(); toast('हटा दी', 'ok');
+    } else {
+      const b = core.buys().find(function (x) { return x.id === t.getAttribute('data-editbuy'); });
+      if (!b) return;
+      draftBuy = JSON.parse(JSON.stringify(b));
+      renderBuyForm(); showBuyForm(true); window.scrollTo(0, 0);
+    }
+  });
+
+  $('saveBuyLists').onclick = function () {
+    const l = core.setBuyLists($('blItems').value, $('blParties').value);
+    $('buyListsInfo').textContent = l.items.length + ' सामान · ' + l.parties.length + ' सप्लायर';
+    toast('✔ खरीद की लिस्ट save हुई', 'ok');
+  };
 
   // ---- विश्लेषण के बटन
   $('moreBtn').onclick = function () {
