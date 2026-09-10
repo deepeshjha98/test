@@ -85,6 +85,12 @@
     .vd .num.slow { color: var(--red); } .vd .num.fast { color: var(--green); } .vd .num.same { color: var(--blue); }
     .vd .say { font-size: 15px; margin-top: 6px; }
     .vd .sub { font-size: 13px; color: var(--muted); margin-top: 8px; }
+    #upBar { position: sticky; top: 0; z-index: 6; background: var(--green); color: #fff;
+             display: flex; align-items: center; gap: 10px; padding: 10px 14px; }
+    #upBar span { flex: 1; font-size: 14px; font-weight: 600; }
+    #upBar button { background: #fff; color: var(--green); border: 0; border-radius: 9px;
+                    padding: 9px 14px; font-size: 14px; font-weight: 700; white-space: nowrap; }
+    #upBar button:disabled { opacity: .6; }
     .warn2 { font-size: 13px; color: var(--amber); font-weight: 600; margin-top: 10px; }
     .money { text-align: center; padding: 10px 0 2px; }
     .money .rs { font-size: 28px; font-weight: 800; line-height: 1.15; }
@@ -117,6 +123,11 @@
   <h1 id="title">लोडिंग / अनलोडिंग</h1>
   <span class="net" id="net">online</span>
 </header>
+
+<div id="upBar" hidden>
+  <span id="upName"></span>
+  <button id="upBtn">⬆ अपडेट करें</button>
+</div>
 
 <main>
   <!-- ================= नई entry ================= -->
@@ -292,6 +303,9 @@
       <textarea id="restoreIn" class="mono" rows="4" placeholder="यहाँ backup का JSON paste करो"></textarea>
       <div class="hint">सिर्फ़ नई entries जुड़ेंगी — मौजूदा कुछ नहीं मिटेगा।</div>
       <button class="btn ghost" id="restoreBtn">♻ Restore करो</button>
+
+      <button class="btn ghost" id="checkUpdate">⬆ अपडेट जाँचो</button>
+      <div class="kv" id="verInfo"></div>
 
       <div class="kv" id="dbInfo" style="margin-top:12px"></div>
       <div class="warn" id="dbErr" hidden></div>

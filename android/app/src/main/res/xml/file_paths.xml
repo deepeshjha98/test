@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FileProvider को बताता है कि कौन सी फ़ाइलें बाहर (installer को) दी जा सकती हैं।
+     सिर्फ़ app की अपनी Download डायरेक्टरी — वहीं अपडेट वाली APK उतरती है। -->
+<paths>
+    <external-files-path name="jcm-updates" path="Download/" />
+</paths>

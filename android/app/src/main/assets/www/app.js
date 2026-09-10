@@ -10,7 +10,7 @@
 (function (root) {
   'use strict';
 
-  const APP_VERSION = '1.5.0';
+  const APP_VERSION = '1.6.0';
   const K = { api: 'jcm.api', key: 'jcm.key', lists: 'jcm.lists', queue: 'jcm.queue', draft: 'jcm.draft', shift: 'jcm.shift', rates: 'jcm.rates' };
   const DEFAULT_SHIFT = { start: '08:30', finish: '18:30' };   // मिल का सामान्य समय; ⚙ सेटिंग से बदला जा सकता है
   // पैसे की दरें — ⚙ सेटिंग से बदली जा सकती हैं
@@ -89,6 +89,27 @@
   }
   function statusText(it) {
     return it.status === 'sent' ? 'Sheet में गई' : it.status === 'failed' ? 'अटकी' : 'फ़ोन में';
+  }
+
+  /* release के JSON से यह तय करना कि नई build है या नहीं।
+     tag "build-9" का 9 ही versionCode है (workflow github.run_number देता है),
+     इसलिए तुलना हमेशा पूरे अंक पर होती है — नाम की स्ट्रिंग पर नहीं।   */
+  function pickUpdate(rel, currentCode) {
+    if (!rel || typeof rel !== 'object') return null;
+    const m = /^build-(\d+)$/.exec(String(rel.tag_name || ''));
+    if (!m) return null;
+    const code = parseInt(m[1], 10);
+    if (!isFinite(code) || !(code > (currentCode || 0))) return null;
+    const assets = Array.isArray(rel.assets) ? rel.assets : [];
+    let apk = null;
+    for (let i = 0; i < assets.length; i++) {
+      const a = assets[i];
+      const u = String((a && a.browser_download_url) || '');
+      if (/\.apk$/i.test(String((a && a.name) || '')) &&
+          u.indexOf('https://github.com/deepeshjha98/test/releases/download/') === 0) { apk = u; break; }
+    }
+    if (!apk) return null;
+    return { code: code, name: String(rel.name || rel.tag_name), url: apk };
   }
 
   // server जैसी ही validation (server authoritative है; यह user को तुरंत बताने के लिए)
@@ -556,7 +577,7 @@
     return core;
   }
 
-  const api = { createCore: createCore, validate: validate, uuid: uuid, todayLocal: todayLocal, durationText: durationText, fmtDate: fmtDate, cleanNames: cleanNames, splitShift: splitShift, hhmm: hhmm, DEFAULT_SHIFT: DEFAULT_SHIFT, APP_VERSION: APP_VERSION };
+  const api = { createCore: createCore, validate: validate, uuid: uuid, todayLocal: todayLocal, durationText: durationText, fmtDate: fmtDate, cleanNames: cleanNames, pickUpdate: pickUpdate, splitShift: splitShift, hhmm: hhmm, DEFAULT_SHIFT: DEFAULT_SHIFT, APP_VERSION: APP_VERSION };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.JCM = api;
 
@@ -934,6 +955,46 @@
     $('moneyNote').textContent = note;
   }
 
+  // ---- app का अपडेट (सिर्फ़ APK में; browser में यह पुल नहीं होता)
+  const UPDATE_API = 'https://api.github.com/repos/deepeshjha98/test/releases/latest';
+  const UPDATE_CHECK_GAP_MS = 6 * 60 * 60 * 1000;   // 6 घंटे में एक बार से ज़्यादा नहीं
+  let pendingUpdate = null;
+
+  function native() { return (typeof JCMNative !== 'undefined') ? JCMNative : null; }
+
+  function showUpdateBar(u) {
+    pendingUpdate = u;
+    $('upName').textContent = 'नया version आया है (v1.0.' + u.code + ')';
+    $('upBar').hidden = false;
+  }
+
+  async function checkUpdate(manual) {
+    const N = native();
+    if (!N) { if (manual) toast('अपडेट सिर्फ़ installed app में जाँची जा सकती है।', 'err', 3500); return; }
+    if (!manual) {
+      const last = Number(localStorage.getItem('jcm.upCheck') || 0);
+      if (Date.now() - last < UPDATE_CHECK_GAP_MS) return;
+    }
+    try {
+      if (manual) toast('जाँच रहा है…');
+      const res = await fetch(UPDATE_API, { headers: { 'Accept': 'application/vnd.github+json' } });
+      const rel = JSON.parse(await res.text());
+      try { localStorage.setItem('jcm.upCheck', String(Date.now())); } catch (_) { }
+      const u = pickUpdate(rel, N.versionCode());
+      if (u) { showUpdateBar(u); if (manual) toast('नया version मिला — ऊपर "अपडेट करें" दबाओ', 'ok', 4000); }
+      else if (manual) toast('✔ आपकी app पहले से नई है (v' + N.versionName() + ')', 'ok', 3500);
+    } catch (e) {
+      if (manual) toast('जाँच नहीं हो सकी — internet देखो।', 'err', 3500);
+    }
+  }
+
+  // Java से आने वाला हाल
+  root.JCMUpdateStatus = function (state, msg) {
+    if (state === 'downloading') { $('upBtn').disabled = true; $('upBtn').textContent = '⬇ उतर रही है…'; toast('अपडेट उतर रही है…'); }
+    else if (state === 'installing') { $('upBtn').textContent = '⬇ install…'; toast('अब "Update" दबाकर install कर दो', 'ok', 5000); }
+    else if (state === 'error') { $('upBtn').disabled = false; $('upBtn').textContent = '⬆ अपडेट करें'; toast(msg || 'अपडेट नहीं हो पाई', 'err', 5000); }
+  };
+
   // ---- मोड के हिसाब से hint
   function modeHints() {
     $('saveHint').textContent = core.localOnly()
@@ -954,6 +1015,10 @@
         if (e && e.usage) extra = ' · ' + (e.usage < 1048576 ? Math.max(1, Math.round(e.usage / 1024)) + ' KB' : (e.usage / 1048576).toFixed(1) + ' MB') + ' इस्तेमाल';
       }
     } catch (_) { }
+    const N = native();
+    $('verInfo').textContent = N
+      ? 'अभी लगी हुई: v' + N.versionName() + ' (build ' + N.versionCode() + ')'
+      : 'browser में चल रही है — अपडेट सिर्फ़ installed app में।';
     $('dbInfo').textContent = core.queue().length + ' entry · ' + name + extra;
     const err = store.lastError ? store.lastError() : '';
     $('dbErr').textContent = err || '';
@@ -1013,6 +1078,19 @@
     } catch (e) { out.textContent = '✖ ' + e.message; }
   };
   $('clearSent').onclick = function () { if (confirm('सिर्फ भेजी हुई entries का local इतिहास हटेगा (Sheet पर असर नहीं)। ठीक?')) { core.clearSent(); renderList(); toast('इतिहास साफ़', 'ok'); } };
+
+  // ---- अपडेट के बटन
+  $('upBtn').onclick = function () {
+    const N = native();
+    if (!N || !pendingUpdate) return;
+    if (!N.canInstall()) {
+      toast('पहले इस app को "Install unknown apps" की इजाज़त दो — सेटिंग खोल रहा हूँ', 'err', 5000);
+      N.openInstallSettings();
+      return;
+    }
+    N.downloadAndInstall(pendingUpdate.url);
+  };
+  $('checkUpdate').onclick = function () { checkUpdate(true); };
 
   // ---- विश्लेषण के बटन
   $('moreBtn').onclick = function () {
@@ -1116,6 +1194,7 @@
     setNet();
     modeHints();
     applyQuickRange();
+    checkUpdate(false);   // चुपचाप, 6 घंटे में एक बार से ज़्यादा नहीं
     $('installHint').textContent = inApk ? 'यह installed app है।' : /iPhone|iPad/.test(navigator.userAgent) ? 'iPhone: Safari में Share → "Add to Home Screen"।' : 'Android/Chrome: menu → "Add to Home screen" / "Install app"।';
     $('ver').textContent = APP_VERSION;
     $('date').value = todayLocal();
