@@ -10,7 +10,7 @@
 (function (root) {
   'use strict';
 
-  const APP_VERSION = '1.7.0';
+  const APP_VERSION = '1.8.0';
   const K = { api: 'jcm.api', key: 'jcm.key', lists: 'jcm.lists', queue: 'jcm.queue', draft: 'jcm.draft', shift: 'jcm.shift', rates: 'jcm.rates', buys: 'jcm.buys', buyLists: 'jcm.buylists' };
   const DEFAULT_SHIFT = { start: '08:30', finish: '18:30' };   // मिल का सामान्य समय; ⚙ सेटिंग से बदला जा सकता है
   // पैसे की दरें — ⚙ सेटिंग से बदली जा सकती हैं
@@ -94,12 +94,15 @@
   /* release के JSON से यह तय करना कि नई build है या नहीं।
      tag "build-9" का 9 ही versionCode है (workflow github.run_number देता है),
      इसलिए तुलना हमेशा पूरे अंक पर होती है — नाम की स्ट्रिंग पर नहीं।   */
-  function pickUpdate(rel, currentCode) {
+  function pickUpdate(rel, currentCode, skipped) {
     if (!rel || typeof rel !== 'object') return null;
     const m = /^build-(\d+)$/.exec(String(rel.tag_name || ''));
     if (!m) return null;
     const code = parseInt(m[1], 10);
     if (!isFinite(code) || !(code > (currentCode || 0))) return null;
+    // जिस build को user ने "अभी नहीं" कह दिया, वह फिर नहीं पूछी जाती —
+    // पर उससे नई कोई build आए तो पट्टी दुबारा दिखेगी।
+    if (code <= (Number(skipped) || 0)) return null;
     const assets = Array.isArray(rel.assets) ? rel.assets : [];
     let apk = null;
     for (let i = 0; i < assets.length; i++) {
@@ -154,14 +157,34 @@
   }
 
   /* पूरा हिसाब। लौटाता है हर line का असली रेट (₹/क्विंटल और ₹/बोरा) और ट्रक का जोड़। */
+  /* पहले सप्लायर हर सामान पर अलग भरा जाता था। पुरानी खरीद खोलने पर उसे नए
+     ढाँचे में ले आओ: सब सामान एक ही सप्लायर के हों तो वही ट्रक का सप्लायर बने,
+     अलग-अलग हों तो "कई सप्लायर" चालू रहे — कोई जानकारी न खोए।            */
+  function normalizeBuyParty(b) {
+    const p = Object.assign({}, b || {});
+    p.lines = (Array.isArray(p.lines) ? p.lines : []).map(function (l) { return Object.assign({}, l); });
+    const seen = {};
+    p.lines.forEach(function (l) { const n = String(l.party || '').trim(); if (n) seen[n] = 1; });
+    const uniq = Object.keys(seen);
+    p.party = String(p.party || '').trim();
+    if (!p.party && uniq.length === 1) p.party = uniq[0];
+    p.multiParty = !!b && !!b.multiParty || uniq.length > 1 || (uniq.length === 1 && uniq[0] !== p.party);
+    if (!p.multiParty) p.lines.forEach(function (l) { l.party = ''; });
+    return p;
+  }
+
   function purchaseCalc(p) {
     p = p || {};
     const basis = (p.basis === 'value' || p.basis === 'bags') ? p.basis : 'weight';
+    /* सप्लायर आम तौर पर पूरे ट्रक का एक ही होता है, इसलिए वह ट्रक पर रखा जाता है।
+       कभी-कभार (50-60 में एक गाड़ी) माल कई सप्लायर से आता है — तब line पर भरा
+       सप्लायर ट्रक वाले को हरा देता है।                                          */
+    const truckParty = String(p.party || '').trim();
     const rows = (Array.isArray(p.lines) ? p.lines : []).map(function (l) {
       const b = lineBase(l);
       const lineExp = sumExpenses(l && l.expenses, b);
       return {
-        item: (l && l.item) || '', party: (l && l.party) || '', mode: (l && l.mode) === 'quintal' ? 'quintal' : 'bag',
+        item: (l && l.item) || '', party: (l && l.party) || truckParty, mode: (l && l.mode) === 'quintal' ? 'quintal' : 'bag',
         bags: b.bags, kg: b.kg, qtl: b.kg / 100, rate: Number(l && l.rate) || 0,
         basic: b.basic, lineExp: lineExp, value: b.basic + lineExp,
         share: 0, total: 0, perKg: null, perQuintal: null, perBag: null
@@ -611,6 +634,8 @@
           id: b.id || uuid(),
           date: b.date || todayLocal(now()),
           vehicle: String(b.vehicle || '').trim(),
+          party: String(b.party || '').trim(),
+          multiParty: !!b.multiParty,
           basis: calc.basis,
           lines: b.lines.map(function (l) {
             return {
@@ -742,7 +767,7 @@
     return core;
   }
 
-  const api = { createCore: createCore, validate: validate, uuid: uuid, todayLocal: todayLocal, durationText: durationText, fmtDate: fmtDate, cleanNames: cleanNames, pickUpdate: pickUpdate, purchaseCalc: purchaseCalc, expenseAmount: expenseAmount, EXPENSE_KINDS: EXPENSE_KINDS, splitShift: splitShift, hhmm: hhmm, DEFAULT_SHIFT: DEFAULT_SHIFT, APP_VERSION: APP_VERSION };
+  const api = { createCore: createCore, validate: validate, uuid: uuid, todayLocal: todayLocal, durationText: durationText, fmtDate: fmtDate, cleanNames: cleanNames, pickUpdate: pickUpdate, normalizeBuyParty: normalizeBuyParty, purchaseCalc: purchaseCalc, expenseAmount: expenseAmount, EXPENSE_KINDS: EXPENSE_KINDS, splitShift: splitShift, hhmm: hhmm, DEFAULT_SHIFT: DEFAULT_SHIFT, APP_VERSION: APP_VERSION };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.JCM = api;
 
@@ -1130,14 +1155,27 @@
   // ---- app का अपडेट (सिर्फ़ APK में; browser में यह पुल नहीं होता)
   const UPDATE_API = 'https://api.github.com/repos/deepeshjha98/test/releases/latest';
   const UPDATE_CHECK_GAP_MS = 6 * 60 * 60 * 1000;   // 6 घंटे में एक बार से ज़्यादा नहीं
+  const UPDATE_SKIP_KEY = 'jcm.upSkip';
   let pendingUpdate = null;
 
   function native() { return (typeof JCMNative !== 'undefined') ? JCMNative : null; }
 
+  function skippedCode() {
+    try { return Number(localStorage.getItem(UPDATE_SKIP_KEY) || 0) || 0; } catch (_) { return 0; }
+  }
+
+  /* पट्टी सिर्फ़ तभी दिखे जब सचमुच नई build मौजूद हो। इसलिए दिखाना और छिपाना
+     दोनों एक ही जगह से होते हैं, और जाँच में कुछ न मिले तो यह छिप जाती है। */
   function showUpdateBar(u) {
     pendingUpdate = u;
     $('upName').textContent = 'नया version आया है (v1.0.' + u.code + ')';
+    $('upBtn').disabled = false;
+    $('upBtn').textContent = '⬆ अपडेट करें';
     $('upBar').hidden = false;
+  }
+  function hideUpdateBar() {
+    pendingUpdate = null;
+    $('upBar').hidden = true;
   }
 
   async function checkUpdate(manual) {
@@ -1152,9 +1190,10 @@
       const res = await fetch(UPDATE_API, { headers: { 'Accept': 'application/vnd.github+json' } });
       const rel = JSON.parse(await res.text());
       try { localStorage.setItem('jcm.upCheck', String(Date.now())); } catch (_) { }
-      const u = pickUpdate(rel, N.versionCode());
+      // हाथ से जाँचने का मतलब है "मुझे अब देखना है" — तब छोड़ा हुआ version भी दिखाओ
+      const u = pickUpdate(rel, N.versionCode(), manual ? 0 : skippedCode());
       if (u) { showUpdateBar(u); if (manual) toast('नया version मिला — ऊपर "अपडेट करें" दबाओ', 'ok', 4000); }
-      else if (manual) toast('✔ आपकी app पहले से नई है (v' + N.versionName() + ')', 'ok', 3500);
+      else { hideUpdateBar(); if (manual) toast('✔ आपकी app पहले से नई है (v' + N.versionName() + ')', 'ok', 3500); }
     } catch (e) {
       if (manual) toast('जाँच नहीं हो सकी — internet देखो।', 'err', 3500);
     }
@@ -1169,12 +1208,16 @@
 
   // ══════════════════ खरीद की screen ══════════════════
   let draftBuy = null;
+  let draftLine = null;        // popup में खुला सामान — असली line की नक़ल, "जोड़ो" दबाने पर ही लगती है
+  let draftLineAt = -1;        // -1 = नया सामान, वरना draftBuy.lines का index
   const KIND_LABEL = { flat: 'सीधी रक़म ₹', perQuintal: '₹ / क्विंटल', perBag: '₹ / बोरा', percent: '% मूल पर' };
 
   function newLine() { return { item: '', party: '', mode: 'bag', bags: '', bagKg: '', qtl: '', rate: '', expenses: [] }; }
   function blankBuy() {
-    return { date: todayLocal(), vehicle: '', basis: 'weight', lines: [newLine()], expenses: [] };
+    // सामान शुरू में एक भी नहीं — "➕ सामान जोड़ो" से popup खुलेगा
+    return { date: todayLocal(), vehicle: '', party: '', multiParty: false, basis: 'weight', lines: [], expenses: [] };
   }
+  function lineParty(l) { return String((l && l.party) || '').trim() || String((draftBuy && draftBuy.party) || '').trim(); }
 
   function optsHtml(list, sel) {
     let h = '<option value="">-- चुनो --</option>';
@@ -1202,31 +1245,30 @@
     const L = core.buyLists();
     $('bDate').value = draftBuy.date;
     $('bVeh').value = draftBuy.vehicle;
+    $('bParty').innerHTML = optsHtml(L.parties, draftBuy.party);
+    $('bMulti').checked = !!draftBuy.multiParty;
+    $('bPartyHint').textContent = draftBuy.multiParty
+      ? 'हर सामान का सप्लायर उसी के popup में भरो; जो खाली रहेगा उस पर ऊपर वाला ही लगेगा।'
+      : 'एक ही बार चुनो — ट्रक के सारे सामान पर यही लगेगा।';
 
     let h = '';
+    if (!draftBuy.lines.length) {
+      h = '<div class="card"><div class="empty">अभी कोई सामान नहीं।<br>नीचे "➕ सामान जोड़ो" दबाओ।</div></div>';
+    }
     draftBuy.lines.forEach(function (l, i) {
-      const bag = l.mode !== 'quintal';
+      const qty = l.mode === 'quintal'
+        ? (esc(l.qtl || '0') + ' क्विंटल × ₹' + esc(l.rate || '0') + '/क्विं')
+        : (esc(l.bags || '0') + ' बोरे × ' + esc(l.bagKg || '0') + 'kg × ₹' + esc(l.rate || '0') + '/बोरा');
+      const pty = String(l.party || '').trim();
       h += '<div class="card lrow">' +
-        '<div class="top"><b>सामान ' + (i + 1) + '</b>' +
-          (draftBuy.lines.length > 1 ? '<button class="xbtn" data-rmline="' + i + '">✕ हटाओ</button>' : '') + '</div>' +
-        '<div class="row2">' +
-          '<div><label style="margin-top:0">सामान</label><select data-l="' + i + '" data-f="item">' + optsHtml(L.items, l.item) + '</select></div>' +
-          '<div><label style="margin-top:0">सप्लायर</label><select data-l="' + i + '" data-f="party">' + optsHtml(L.parties, l.party) + '</select></div>' +
-        '</div>' +
-        '<div class="chips2" style="margin-top:10px">' +
-          '<button data-mode="' + i + ':bag"' + (bag ? ' class="on"' : '') + '>बोरे के भाव</button>' +
-          '<button data-mode="' + i + ':quintal"' + (!bag ? ' class="on"' : '') + '>क्विंटल के भाव</button>' +
-        '</div>' +
-        (bag
-          ? '<div class="row3"><div><label>बोरे</label><input type="number" inputmode="numeric" step="any" data-l="' + i + '" data-f="bags" value="' + esc(l.bags) + '"></div>' +
-            '<div><label>एक बोरा kg</label><input type="number" inputmode="decimal" step="any" data-l="' + i + '" data-f="bagKg" value="' + esc(l.bagKg) + '"></div>' +
-            '<div><label>₹ / बोरा</label><input type="number" inputmode="decimal" step="any" data-l="' + i + '" data-f="rate" value="' + esc(l.rate) + '"></div></div>'
-          : '<div class="row3"><div><label>क्विंटल</label><input type="number" inputmode="decimal" step="any" data-l="' + i + '" data-f="qtl" value="' + esc(l.qtl) + '"></div>' +
-            '<div><label>बोरे (वैकल्पिक)</label><input type="number" inputmode="numeric" step="any" data-l="' + i + '" data-f="bags" value="' + esc(l.bags) + '"></div>' +
-            '<div><label>₹ / क्विंटल</label><input type="number" inputmode="decimal" step="any" data-l="' + i + '" data-f="rate" value="' + esc(l.rate) + '"></div></div>') +
-        '<label>इसी सामान के ख़र्च (गद्दी, टैक्स…)</label>' + expRows(l.expenses, 'L' + i) +
-        '<button class="btn ghost sm" data-addexp="' + i + '" style="width:100%">➕ ख़र्च</button>' +
+        '<div class="top"><b>' + esc(l.item || '(सामान नहीं चुना)') + '</b></div>' +
+        '<div class="s">' + qty + (pty ? ' · सप्लायर ' + esc(pty) : '') +
+          (l.expenses && l.expenses.length ? ' · ' + l.expenses.length + ' ख़र्च' : '') + '</div>' +
         '<div class="res" id="lres' + i + '"></div>' +
+        '<div style="display:flex;gap:8px;margin-top:8px">' +
+          '<button class="btn ghost sm" data-editline="' + i + '" style="flex:1">✎ बदलो</button>' +
+          '<button class="btn danger sm" data-rmline="' + i + '" style="flex:1">🗑 हटाओ</button>' +
+        '</div>' +
       '</div>';
     });
     $('bLines').innerHTML = h;
@@ -1235,6 +1277,58 @@
       b.className = b.getAttribute('data-basis') === draftBuy.basis ? 'on' : '';
     });
     recalcBuy();
+  }
+
+  // ---- सामान का popup
+  function openItemModal(i) {
+    draftLineAt = (i == null || i < 0) ? -1 : i;
+    draftLine = draftLineAt < 0 ? newLine() : JSON.parse(JSON.stringify(draftBuy.lines[draftLineAt]));
+    $('imTitle').textContent = draftLineAt < 0 ? 'सामान जोड़ो' : 'सामान बदलो';
+    $('imOk').textContent = draftLineAt < 0 ? '✔ जोड़ो' : '✔ ठीक है';
+    renderItemModal();
+    $('itemModal').hidden = false;
+  }
+  function closeItemModal() {
+    $('itemModal').hidden = true;
+    draftLine = null; draftLineAt = -1;
+  }
+  function renderItemModal() {
+    const L = core.buyLists();
+    const l = draftLine, bag = l.mode !== 'quintal';
+    let h = '<label style="margin-top:0">सामान</label>' +
+      '<select data-m="item">' + optsHtml(L.items, l.item) + '</select>';
+    if (draftBuy.multiParty) {
+      h += '<label>इस सामान का सप्लायर</label>' +
+        '<select data-m="party">' + optsHtml(L.parties, l.party) + '</select>' +
+        '<div class="hint" style="margin-top:6px">खाली छोड़ोगे तो ट्रक वाला सप्लायर' +
+        (draftBuy.party ? ' (' + esc(draftBuy.party) + ')' : '') + ' लगेगा।</div>';
+    }
+    h += '<label>भाव किस हिसाब से?</label>' +
+      '<div class="chips2">' +
+        '<button data-mmode="bag"' + (bag ? ' class="on"' : '') + '>बोरे के भाव</button>' +
+        '<button data-mmode="quintal"' + (!bag ? ' class="on"' : '') + '>क्विंटल के भाव</button>' +
+      '</div>' +
+      (bag
+        ? '<div class="row3"><div><label>बोरे</label><input type="number" inputmode="numeric" step="any" data-m="bags" value="' + esc(l.bags) + '"></div>' +
+          '<div><label>एक बोरा kg</label><input type="number" inputmode="decimal" step="any" data-m="bagKg" value="' + esc(l.bagKg) + '"></div>' +
+          '<div><label>₹ / बोरा</label><input type="number" inputmode="decimal" step="any" data-m="rate" value="' + esc(l.rate) + '"></div></div>'
+        : '<div class="row3"><div><label>क्विंटल</label><input type="number" inputmode="decimal" step="any" data-m="qtl" value="' + esc(l.qtl) + '"></div>' +
+          '<div><label>बोरे (वैकल्पिक)</label><input type="number" inputmode="numeric" step="any" data-m="bags" value="' + esc(l.bags) + '"></div>' +
+          '<div><label>₹ / क्विंटल</label><input type="number" inputmode="decimal" step="any" data-m="rate" value="' + esc(l.rate) + '"></div></div>') +
+      '<label>इसी सामान के ख़र्च (गद्दी, टैक्स…)</label>' + expRows(l.expenses, 'M') +
+      '<button class="btn ghost sm" data-addexp="M" style="width:100%">➕ ख़र्च</button>' +
+      '<div class="res" id="imRes"></div>';
+    $('imBody').innerHTML = h;
+    recalcItemModal();
+  }
+  function recalcItemModal() {
+    if (!draftLine || !$('imRes')) return;
+    const x = purchaseCalc({ basis: 'weight', party: draftBuy.party, lines: [draftLine], expenses: [] }).lines[0];
+    $('imRes').textContent = x.kg > 0
+      ? x.qtl.toFixed(2) + ' क्विं · मूल ' + rs(x.basic) + (x.lineExp ? ' + ख़र्च ' + rs(x.lineExp) : '') +
+        ' → ' + rs(x.perQuintal) + '/क्विं' + (x.perBag != null ? ' · ' + rs(x.perBag) + '/बोरा' : '') +
+        '  (साझा ख़र्च अलग जुड़ेगा)'
+      : 'वज़न और रेट भरो';
   }
 
   function recalcBuy() {
@@ -1290,7 +1384,7 @@
     box.innerHTML = h;
   }
 
-  function showBuyForm(on) { $('buyFormWrap').hidden = !on; $('buyListWrap').hidden = on; }
+  function showBuyForm(on) { if (!on) closeItemModal(); $('buyFormWrap').hidden = !on; $('buyListWrap').hidden = on; }
 
   // ---- मोड के हिसाब से hint
   function modeHints() {
@@ -1387,12 +1481,36 @@
     }
     N.downloadAndInstall(pendingUpdate.url);
   };
+  $('upSkip').onclick = function () {
+    const c = pendingUpdate ? pendingUpdate.code : 0;
+    try { if (c) localStorage.setItem(UPDATE_SKIP_KEY, String(c)); } catch (_) { }
+    hideUpdateBar();
+    toast('ठीक — इसके लिए फिर नहीं पूछूँगा। ⚙ में "अपडेट जाँचो" से कभी भी देख सकते हो।', 'ok', 4500);
+  };
   $('checkUpdate').onclick = function () { checkUpdate(true); };
 
   // ---- खरीद के बटन
   $('newBuy').onclick = function () { draftBuy = blankBuy(); renderBuyForm(); showBuyForm(true); window.scrollTo(0, 0); };
-  $('cancelBuy').onclick = function () { draftBuy = null; showBuyForm(false); renderBuyList(); };
-  $('addLine').onclick = function () { draftBuy.lines.push(newLine()); renderBuyForm(); };
+  $('cancelBuy').onclick = function () { closeItemModal(); draftBuy = null; showBuyForm(false); renderBuyList(); };
+  $('addLine').onclick = function () { openItemModal(-1); };
+  $('imClose').onclick = closeItemModal;
+  $('imCancel').onclick = closeItemModal;
+  $('imOk').onclick = function () {
+    if (!draftLine) return;
+    if (!String(draftLine.item || '').trim()) { toast('पहले सामान चुनो।', 'err', 3000); return; }
+    const chk = purchaseCalc({ lines: [draftLine], party: draftBuy.party });
+    if (!(chk.kg > 0)) { toast('वज़न भरो — बोरे × kg, या क्विंटल।', 'err', 3500); return; }
+    if (draftLineAt < 0) draftBuy.lines.push(draftLine); else draftBuy.lines[draftLineAt] = draftLine;
+    closeItemModal();
+    renderBuyForm();
+  };
+  $('bParty').onchange = function () { draftBuy.party = $('bParty').value; renderBuyForm(); };
+  $('bMulti').onchange = function () {
+    draftBuy.multiParty = $('bMulti').checked;
+    // बंद करते ही हर सामान का अलग सप्लायर हट जाता है — वरना छिपा हुआ रह जाता
+    if (!draftBuy.multiParty) draftBuy.lines.forEach(function (l) { l.party = ''; });
+    renderBuyForm();
+  };
   $('addTripExp').onclick = function () { draftBuy.expenses.push({ name: '', kind: 'flat', value: '' }); renderBuyForm(); };
   ['bDate', 'bVeh'].forEach(function (id) {
     $(id).addEventListener('input', function () { draftBuy.date = $('bDate').value; draftBuy.vehicle = $('bVeh').value; });
@@ -1405,50 +1523,58 @@
      टाइप करते समय सिर्फ़ नतीजा दुबारा बनता है, पूरा form नहीं — वरना हर अक्षर पर
      keyboard बंद हो जाता और cursor कूदता। ढाँचा बदले (row जुड़े/हटे) तभी पूरा form। */
   function lineExpList(prefix) {
-    if (prefix === 'T') return draftBuy.expenses;
+    if (prefix === 'T') return draftBuy.expenses;            // पूरे ट्रक के साझा ख़र्च
+    if (prefix === 'M') return draftLine ? draftLine.expenses : [];   // popup में खुले सामान के
     const i = parseInt(prefix.slice(1), 10);
     return draftBuy.lines[i] ? draftBuy.lines[i].expenses : [];
   }
-  $('buyFormWrap').addEventListener('input', function (ev) {
+  function onBuyInput(ev) {
     const t = ev.target;
-    if (!t) return;
-    if (t.hasAttribute('data-l')) {
+    if (!t || !t.hasAttribute) return;
+    if (t.hasAttribute('data-m')) {                            // popup का कोई खाना
+      if (draftLine) { draftLine[t.getAttribute('data-m')] = t.value; recalcItemModal(); }
+    } else if (t.hasAttribute('data-l')) {
       const l = draftBuy.lines[parseInt(t.getAttribute('data-l'), 10)];
       if (l) { l[t.getAttribute('data-f')] = t.value; recalcBuy(); }
     } else if (t.hasAttribute('data-e')) {
-      const list = lineExpList(t.getAttribute('data-e'));
-      const x = list[parseInt(t.getAttribute('data-i'), 10)];
-      if (x) { x[t.getAttribute('data-f')] = t.value; recalcBuy(); }
+      const pre = t.getAttribute('data-e');
+      const x = lineExpList(pre)[parseInt(t.getAttribute('data-i'), 10)];
+      if (x) { x[t.getAttribute('data-f')] = t.value; if (pre === 'M') recalcItemModal(); else recalcBuy(); }
     }
-  });
-  $('buyFormWrap').addEventListener('change', function (ev) {   // select वाले
+  }
+  function onBuyChange(ev) {                                   // select वाले
     const t = ev.target;
-    if (t && (t.hasAttribute('data-l') || t.hasAttribute('data-e'))) {
-      const e = new Event('input', { bubbles: true });
-      t.dispatchEvent(e);
+    if (t && t.hasAttribute && (t.hasAttribute('data-m') || t.hasAttribute('data-l') || t.hasAttribute('data-e'))) {
+      t.dispatchEvent(new Event('input', { bubbles: true }));
     }
-  });
-  $('buyFormWrap').addEventListener('click', function (ev) {
-    const t = ev.target.closest ? ev.target.closest('[data-rmline],[data-addexp],[data-rmexp],[data-mode]') : null;
+  }
+  function onBuyClick(ev) {
+    const t = ev.target.closest ? ev.target.closest('[data-rmline],[data-editline],[data-addexp],[data-rmexp],[data-mmode]') : null;
     if (!t) return;
+    const inModal = !!(t.closest && t.closest('#itemModal'));
+    if (t.hasAttribute('data-editline')) { openItemModal(parseInt(t.getAttribute('data-editline'), 10)); return; }
     if (t.hasAttribute('data-rmline')) {
       if (!confirm('यह सामान हटाना है?')) return;
       draftBuy.lines.splice(parseInt(t.getAttribute('data-rmline'), 10), 1);
     } else if (t.hasAttribute('data-addexp')) {
-      const l = draftBuy.lines[parseInt(t.getAttribute('data-addexp'), 10)];
-      if (l) l.expenses.push({ name: '', kind: 'percent', value: '' });
+      const list = lineExpList(t.getAttribute('data-addexp') === 'M' ? 'M' : 'L' + t.getAttribute('data-addexp'));
+      list.push({ name: '', kind: 'percent', value: '' });
     } else if (t.hasAttribute('data-rmexp')) {
       lineExpList(t.getAttribute('data-rmexp')).splice(parseInt(t.getAttribute('data-i'), 10), 1);
-    } else if (t.hasAttribute('data-mode')) {
-      const p = t.getAttribute('data-mode').split(':');
-      const l = draftBuy.lines[parseInt(p[0], 10)];
-      if (l) l.mode = p[1];
+    } else if (t.hasAttribute('data-mmode')) {
+      if (draftLine) draftLine.mode = t.getAttribute('data-mmode');
     }
-    renderBuyForm();
+    if (inModal) renderItemModal(); else renderBuyForm();
+  }
+  ['buyFormWrap', 'itemModal'].forEach(function (id) {
+    $(id).addEventListener('input', onBuyInput);
+    $(id).addEventListener('change', onBuyChange);
+    $(id).addEventListener('click', onBuyClick);
   });
 
   $('saveBuy').onclick = function () {
     try {
+      closeItemModal();
       core.saveBuy(draftBuy);
       draftBuy = null; showBuyForm(false); renderBuyList();
       toast('✔ खरीद save हो गई', 'ok');
@@ -1464,7 +1590,7 @@
     } else {
       const b = core.buys().find(function (x) { return x.id === t.getAttribute('data-editbuy'); });
       if (!b) return;
-      draftBuy = JSON.parse(JSON.stringify(b));
+      draftBuy = normalizeBuyParty(JSON.parse(JSON.stringify(b)));
       renderBuyForm(); showBuyForm(true); window.scrollTo(0, 0);
     }
   });
