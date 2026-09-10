@@ -229,6 +229,13 @@
       <button class="btn ghost" id="addLine">➕ सामान जोड़ो</button>
 
       <div class="card" style="margin-top:12px">
+        <label style="margin-top:0">सप्लायर के ख़र्च</label>
+        <div class="hint" style="margin-top:0">गद्दी, टैक्स… ये किसी एक सामान पर नहीं,
+          उस सप्लायर के पास से आए सारे सामान पर लगते हैं।</div>
+        <div id="bPex"></div>
+      </div>
+
+      <div class="card" style="margin-top:12px">
         <label style="margin-top:0">पूरे ट्रक के साझा ख़र्च</label>
         <div class="hint" style="margin-top:0">भाड़ा, अनलोडिंग… ये सब सामानों पर बँटेंगे।</div>
         <div id="bExp"></div>
@@ -345,11 +352,17 @@
     </div>
 
     <div class="card">
-      <label style="margin-top:0">खरीद की लिस्ट (हर लाइन में एक नाम)</label>
+      <label style="margin-top:0">खरीद की लिस्ट</label>
       <div class="hint" style="margin-top:0">📦 खरीद में इन्हीं में से चुनना होगा।</div>
-      <label>सामान</label>
-      <textarea id="blItems" rows="4" placeholder="चोकर&#10;चना&#10;धान"></textarea>
-      <label>सप्लायर</label>
+
+      <label>सामान — नाम के साथ बोरे का वज़न भी</label>
+      <div class="hint" style="margin-top:0">वज़न यहीं लिख दो तो entry में अपने-आप भर जाएगा।
+        हर बोरा कम-ज़्यादा हो (खल्ली, धान) तो वज़न खाली छोड़ो।
+        एक ही सामान दो पैक में आता हो तो दोनों लिखो — जैसे <b>30, 50</b>।</div>
+      <div id="blItemList"></div>
+      <button class="btn ghost sm" id="addBlItem" style="width:100%">➕ सामान</button>
+
+      <label>सप्लायर (हर लाइन में एक नाम)</label>
       <textarea id="blParties" rows="4" placeholder="सप्लायर का नाम"></textarea>
       <button class="btn blue" id="saveBuyLists">खरीद की लिस्ट save करो</button>
       <div class="hint" id="buyListsInfo"></div>

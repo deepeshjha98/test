@@ -16,8 +16,10 @@
   var DB_NAME = 'jcm-loading';
   var DB_VERSION = 1;
   var STORE = 'kv';
-  // localStorage से पुराना data उठाने के लिए (IndexedDB से तो सारी keys अपने-आप आती हैं)
-  var KEYS = ['jcm.api', 'jcm.key', 'jcm.lists', 'jcm.queue', 'jcm.draft', 'jcm.shift'];
+  /* localStorage में पड़ी पुरानी keys — यहाँ कोई तय सूची नहीं रखी जाती।
+     पहले तय सूची थी और उसमें jcm.rates / jcm.buys / jcm.buylists जुड़े ही नहीं थे,
+     इसलिए वे कभी migrate ही नहीं होते। जो भी "jcm." से शुरू हो, वह उठा लो।   */
+  var KEY_PREFIX = 'jcm.';
 
   function idb() {
     return root.indexedDB || root.mozIndexedDB || root.webkitIndexedDB || null;
@@ -69,6 +71,17 @@
     });
   }
 
+  function lsKeys() {
+    var out = [];
+    try {
+      for (var i = 0; i < root.localStorage.length; i++) {
+        var k = root.localStorage.key(i);
+        if (k && k.indexOf(KEY_PREFIX) === 0) out.push(k);
+      }
+    } catch (_) { }
+    return out;
+  }
+
   // localStorage safe wrappers (private mode में throw कर सकता है)
   function lsGet(k) { try { return root.localStorage.getItem(k); } catch (_) { return null; } }
   function lsSet(k, v) { try { root.localStorage.setItem(k, v); return true; } catch (_) { return false; } }
@@ -118,23 +131,24 @@
             db = await openDb();
             var rows = await idbReadAll(db);
             backend = 'indexeddb';
-            var found = 0;
-            Object.keys(rows).forEach(function (k) { if (rows[k] != null) { mem[k] = rows[k]; found++; } });
-            if (!found) {
-              // पहली बार: localStorage में पुराना data हो तो उठा लो
-              var moved = 0;
-              KEYS.forEach(function (k) {
-                var v = lsGet(k);
-                if (v != null) { mem[k] = v; persist(k, v); moved++; }
-              });
-              if (moved) lastError = '';
-            }
+            Object.keys(rows).forEach(function (k) { if (rows[k] != null) mem[k] = rows[k]; });
+            /* localStorage में पड़ी हर पुरानी key उठाओ जो IndexedDB में नहीं है।
+               पहले यह सिर्फ़ तब होता था जब IndexedDB पूरी खाली हो — यानी एक भी
+               key पहले लिख चुकी हो तो पुराना data चुपचाप छूट जाता। अब हर key
+               अलग-अलग देखी जाती है, और IndexedDB वाली क़ीमत हमेशा ऊपर रहती है। */
+            var moved = 0;
+            lsKeys().forEach(function (k) {
+              if (Object.prototype.hasOwnProperty.call(mem, k)) return;   // IndexedDB में पहले से है
+              var v = lsGet(k);
+              if (v != null) { mem[k] = v; persist(k, v); moved++; }
+            });
+            if (moved) lastError = '';
           } catch (e) {
             // IndexedDB नहीं चला → localStorage पर चलो
             backend = lsSet('jcm.probe', '1') ? 'localstorage' : 'memory';
             lsDel('jcm.probe');
             if (backend === 'localstorage') {
-              KEYS.forEach(function (k) { var v = lsGet(k); if (v != null) mem[k] = v; });
+              lsKeys().forEach(function (k) { var v = lsGet(k); if (v != null) mem[k] = v; });
             }
             lastError = backend === 'localstorage'
               ? 'IndexedDB नहीं चला, localStorage से काम चल रहा है।'
@@ -165,7 +179,7 @@
     return store;
   }
 
-  var api = { createStore: createStore, KEYS: KEYS, DB_NAME: DB_NAME };
+  var api = { createStore: createStore, KEY_PREFIX: KEY_PREFIX, DB_NAME: DB_NAME };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.JCMDB = api;
 })(typeof window !== 'undefined' ? window : globalThis);

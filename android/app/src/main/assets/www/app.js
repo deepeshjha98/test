@@ -10,7 +10,7 @@
 (function (root) {
   'use strict';
 
-  const APP_VERSION = '1.9.0';
+  const APP_VERSION = '1.10.0';
   const K = { api: 'jcm.api', key: 'jcm.key', lists: 'jcm.lists', queue: 'jcm.queue', draft: 'jcm.draft', shift: 'jcm.shift', rates: 'jcm.rates', buys: 'jcm.buys', buyLists: 'jcm.buylists' };
   const DEFAULT_SHIFT = { start: '08:30', finish: '18:30' };   // मिल का सामान्य समय; ⚙ सेटिंग से बदला जा सकता है
   // पैसे की दरें — ⚙ सेटिंग से बदली जा सकती हैं
@@ -128,6 +128,47 @@
 
   const EXPENSE_KINDS = ['flat', 'perQuintal', 'perBag', 'percent'];
 
+  /* सामान की मास्टर जानकारी। पहले सिर्फ़ नाम रखा जाता था; अब नाम के साथ
+     बोरे का वज़न और भाव का तरीक़ा भी, ताकि हर entry में दुबारा न भरना पड़े।
+       kgs खाली  → हर बोरे का वज़न कम-ज़्यादा (खल्ली, धान) — कुल kg भरा जाएगा
+       kgs में एक → वही वज़न अपने-आप भर जाएगा (चोकर 35, चना 30)
+       kgs में कई → एक ही सामान दो पैक में आता है, entry में चुन लेना है     */
+  function buyItem(x) {
+    if (typeof x === 'string') return { name: x.trim(), kgs: [], rateBy: 'bag' };
+    // अंक ऐसे निकालो कि ऋण-चिह्न साथ रहे — वरना "-5" चुपचाप 5 बन जाता
+    const src = Array.isArray(x && x.kgs) ? x.kgs
+      : (String((x && x.kgs) || '').match(/-?\d*\.?\d+/g) || []);
+    const kgs = [], seen = {};
+    src.forEach(function (k) {
+      const n = Number(k);
+      if (isFinite(n) && n > 0 && !seen[n]) { seen[n] = 1; kgs.push(n); }
+    });
+    kgs.sort(function (a, b) { return a - b; });
+    return { name: String((x && x.name) || '').trim(), kgs: kgs,
+             rateBy: (x && x.rateBy) === 'quintal' ? 'quintal' : 'bag' };
+  }
+  function cleanBuyItems(list) {
+    const out = [], seen = {};
+    (Array.isArray(list) ? list : String(list == null ? '' : list).split('\n')).forEach(function (x) {
+      const it = buyItem(x);
+      if (!it.name || seen[it.name]) return;
+      seen[it.name] = 1; out.push(it);
+    });
+    return out;
+  }
+  function findBuyItem(items, name) {
+    const n = String(name || '').trim();
+    for (let i = 0; i < (items || []).length; i++) if (items[i] && items[i].name === n) return items[i];
+    return null;
+  }
+  function cleanExpList(list) {
+    return (Array.isArray(list) ? list : []).map(function (x) {
+      return { name: String((x && x.name) || '').trim(),
+               kind: EXPENSE_KINDS.indexOf(x && x.kind) >= 0 ? x.kind : 'flat',
+               value: Number(x && x.value) || 0 };
+    });
+  }
+
   // एक ख़र्च की रक़म — जिस चीज़ पर लग रहा है उसके हिसाब से
   function expenseAmount(ex, ctx) {
     const v = Number(ex && ex.value) || 0;
@@ -213,24 +254,49 @@
         item: (l && l.item) || '', party: (l && l.party) || truckParty,
         weigh: lineWeigh(l), rateBy: lineRateBy(l),
         bags: b.bags, kg: b.kg, qtl: b.kg / 100, rate: Number(l && l.rate) || 0,
-        basic: b.basic, lineExp: lineExp, value: b.basic + lineExp,
+        basic: b.basic, lineExp: lineExp, partyExp: 0, value: b.basic + lineExp,
         share: 0, total: 0, perKg: null, perQuintal: null, perBag: null
       };
     });
+
+    /* ख़र्च का बँटवारा — किसी हिस्से के जोड़ पर ख़र्च लगाकर उसी हिस्से की
+       lines में बाँटना। आधार शून्य हो (वज़न भरा ही न हो) तो बराबर-बराबर,
+       ताकि ख़र्च कहीं गुम न हो।                                        */
+    const weightOf = function (r) { return basis === 'value' ? (r.basic + r.lineExp) : basis === 'bags' ? r.bags : r.kg; };
+    function spread(group, amount, into) {
+      const tw = group.reduce(function (t, r) { return t + weightOf(r); }, 0);
+      group.forEach(function (r) {
+        r[into] = tw > 0 ? amount * weightOf(r) / tw : (group.length ? amount / group.length : 0);
+      });
+    }
+
+    /* सप्लायर के ख़र्च — गद्दी, टैक्स वगैरह किसी एक सामान पर नहीं लगते,
+       उस सप्लायर के पास से आए सारे सामान पर लगते हैं। इसलिए उसी सप्लायर की
+       lines का जोड़ निकालकर ख़र्च उन्हीं में बाँटा जाता है।
+       एक-सप्लायर वाले ट्रक में (आम हाल) यह एक ही ढेर बनता है।           */
+    const pex = (p.partyExpenses && typeof p.partyExpenses === 'object') ? p.partyExpenses : {};
+    const groups = {};
+    rows.forEach(function (r) { (groups[r.party] || (groups[r.party] = [])).push(r); });
+    let partyExpTotal = 0;
+    Object.keys(groups).forEach(function (name) {
+      const g = groups[name];
+      const gt = g.reduce(function (t, r) {
+        t.bags += r.bags; t.kg += r.kg; t.basic += r.basic; return t;
+      }, { bags: 0, kg: 0, basic: 0 });
+      const amt = sumExpenses(pex[name], gt);
+      partyExpTotal += amt;
+      spread(g, amt, 'partyExp');
+    });
+    rows.forEach(function (r) { r.value = r.basic + r.lineExp + r.partyExp; });
 
     const tot = rows.reduce(function (t, r) {
       t.bags += r.bags; t.kg += r.kg; t.basic += r.basic; t.lineExp += r.lineExp; t.value += r.value; return t;
     }, { bags: 0, kg: 0, basic: 0, lineExp: 0, value: 0 });
 
-    // साझा ख़र्च — पूरे ट्रक के जोड़ पर लगते हैं
+    // साझा ख़र्च — भाड़ा, अनलोडिंग… ये पूरे ट्रक के जोड़ पर लगते हैं
     const tripExp = sumExpenses(p.expenses, { kg: tot.kg, bags: tot.bags, basic: tot.basic });
-
-    // बँटवारा
-    const weightOf = function (r) { return basis === 'value' ? r.value : basis === 'bags' ? r.bags : r.kg; };
-    const basisTotal = rows.reduce(function (t, r) { return t + weightOf(r); }, 0);
+    spread(rows, tripExp, 'share');
     rows.forEach(function (r) {
-      // आधार शून्य हो (जैसे वज़न भरा ही न हो) तो बराबर-बराबर बाँटो, ताकि ख़र्च गुम न हो
-      r.share = basisTotal > 0 ? tripExp * weightOf(r) / basisTotal : (rows.length ? tripExp / rows.length : 0);
       r.total = r.value + r.share;
       if (r.kg > 0) { r.perKg = r.total / r.kg; r.perQuintal = r.perKg * 100; }
       if (r.bags > 0) r.perBag = r.total / r.bags;
@@ -240,7 +306,7 @@
     return {
       basis: basis, lines: rows,
       bags: tot.bags, kg: tot.kg, qtl: tot.kg / 100,
-      basic: tot.basic, lineExp: tot.lineExp, tripExp: tripExp, total: grand,
+      basic: tot.basic, lineExp: tot.lineExp, partyExp: partyExpTotal, tripExp: tripExp, total: grand,
       perKg: tot.kg > 0 ? grand / tot.kg : null,
       perQuintal: tot.kg > 0 ? (grand / tot.kg) * 100 : null
     };
@@ -640,10 +706,11 @@
       // ---------- खरीद (purchase) ----------
       buyLists: function () {
         const v = get(K.buyLists, null);
-        return { items: (v && v.items) || [], parties: (v && v.parties) || [] };
+        // पुरानी सूची सिर्फ़ नामों की थी — पढ़ते समय नए ढाँचे में आ जाती है
+        return { items: cleanBuyItems((v && v.items) || []), parties: (v && v.parties) || [] };
       },
       setBuyLists: function (items, parties) {
-        const v = { items: cleanNames(items), parties: cleanNames(parties) };
+        const v = { items: cleanBuyItems(items), parties: cleanNames(parties) };
         set(K.buyLists, v);
         return v;
       },
@@ -670,14 +737,20 @@
               weigh: lineWeigh(l), rateBy: lineRateBy(l),
               bags: Number(l.bags) || 0, bagKg: Number(l.bagKg) || 0, totalKg: lineWeigh(l) === 'total' ? lineKg(l) : 0,
               rate: Number(l.rate) || 0,
-              expenses: (l.expenses || []).map(function (x) {
-                return { name: String(x.name || '').trim(), kind: EXPENSE_KINDS.indexOf(x.kind) >= 0 ? x.kind : 'flat', value: Number(x.value) || 0 };
-              })
+              expenses: cleanExpList(l.expenses)
             };
           }),
-          expenses: (b.expenses || []).map(function (x) {
-            return { name: String(x.name || '').trim(), kind: EXPENSE_KINDS.indexOf(x.kind) >= 0 ? x.kind : 'flat', value: Number(x.value) || 0 };
-          }),
+          expenses: cleanExpList(b.expenses),
+          partyExpenses: (function () {
+            const src = (b.partyExpenses && typeof b.partyExpenses === 'object') ? b.partyExpenses : {};
+            const out = {};
+            // खाली ढेर सहेजने का कोई मतलब नहीं — form उन्हें ज़रूरत पड़ने पर बना देता है
+            Object.keys(src).forEach(function (k) {
+              const arr = cleanExpList(src[k]);
+              if (arr.length) out[k] = arr;
+            });
+            return out;
+          })(),
           savedAt: now().toISOString()
         };
         const all = core.buys();
@@ -794,7 +867,7 @@
     return core;
   }
 
-  const api = { createCore: createCore, validate: validate, uuid: uuid, todayLocal: todayLocal, durationText: durationText, fmtDate: fmtDate, cleanNames: cleanNames, pickUpdate: pickUpdate, normalizeBuyParty: normalizeBuyParty, lineWeigh: lineWeigh, lineRateBy: lineRateBy, lineKg: lineKg, purchaseCalc: purchaseCalc, expenseAmount: expenseAmount, EXPENSE_KINDS: EXPENSE_KINDS, splitShift: splitShift, hhmm: hhmm, DEFAULT_SHIFT: DEFAULT_SHIFT, APP_VERSION: APP_VERSION };
+  const api = { createCore: createCore, validate: validate, uuid: uuid, todayLocal: todayLocal, durationText: durationText, fmtDate: fmtDate, cleanNames: cleanNames, pickUpdate: pickUpdate, normalizeBuyParty: normalizeBuyParty, buyItem: buyItem, cleanBuyItems: cleanBuyItems, findBuyItem: findBuyItem, lineWeigh: lineWeigh, lineRateBy: lineRateBy, lineKg: lineKg, purchaseCalc: purchaseCalc, expenseAmount: expenseAmount, EXPENSE_KINDS: EXPENSE_KINDS, splitShift: splitShift, hhmm: hhmm, DEFAULT_SHIFT: DEFAULT_SHIFT, APP_VERSION: APP_VERSION };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.JCM = api;
 
@@ -971,7 +1044,9 @@
       $('api').value = core.getApi(); $('key').value = core.getKey();
       shiftInfo(); ratesInfo(); fillLocalLists(); listsInfo(); dbInfo();
       const bl = core.buyLists();
-      $('blItems').value = bl.items.join('\n'); $('blParties').value = bl.parties.join('\n');
+      draftItems = bl.items.map(function (x) { return { name: x.name, kgs: x.kgs.join(', '), rateBy: x.rateBy }; });
+      renderItemList();
+      $('blParties').value = bl.parties.join('\n');
       $('buyListsInfo').textContent = bl.items.length + ' सामान · ' + bl.parties.length + ' सप्लायर';
     }
     window.scrollTo(0, 0);
@@ -1233,6 +1308,55 @@
     else if (state === 'error') { $('upBtn').disabled = false; $('upBtn').textContent = '⬆ अपडेट करें'; toast(msg || 'अपडेट नहीं हो पाई', 'err', 5000); }
   };
 
+  // ══════════════ ⚙ में सामान की सूची (नाम + बोरे का वज़न) ══════════════
+  /* नाम और वज़न के खानों में टाइप करते समय पूरा हिस्सा दुबारा नहीं बनता —
+     वरना हर अक्षर पर keyboard बंद हो जाता। ढाँचा बदले तभी दुबारा बनता है। */
+  let draftItems = [];
+
+  function renderItemList() {
+    let h = '';
+    if (!draftItems.length) h = '<div class="empty">अभी कोई सामान नहीं — नीचे "➕ सामान" दबाओ।</div>';
+    draftItems.forEach(function (it, i) {
+      const qtl = it.rateBy === 'quintal';
+      h += '<div class="lrow">' +
+        '<div class="top"><b>' + (i + 1) + '</b><button class="xbtn" data-rmbi="' + i + '">✕</button></div>' +
+        '<div class="row2">' +
+          '<div><label style="margin-top:0">नाम</label>' +
+            '<input type="text" data-bi="' + i + '" data-f="name" value="' + esc(it.name) + '" placeholder="चना"></div>' +
+          '<div><label style="margin-top:0">बोरे का kg</label>' +
+            '<input type="text" inputmode="decimal" data-bi="' + i + '" data-f="kgs" value="' + esc(it.kgs) + '" placeholder="30  या  30, 50"></div>' +
+        '</div>' +
+        '<div class="chips2" style="margin-top:8px;margin-bottom:0">' +
+          '<button data-birate="' + i + ':bag"' + (qtl ? '' : ' class="on"') + '>₹ / बोरा</button>' +
+          '<button data-birate="' + i + ':quintal"' + (qtl ? ' class="on"' : '') + '>₹ / क्विंटल</button>' +
+        '</div>' +
+      '</div>';
+    });
+    $('blItemList').innerHTML = h;
+  }
+
+  $('addBlItem').onclick = function () { draftItems.push({ name: '', kgs: '', rateBy: 'bag' }); renderItemList(); };
+  $('blItemList').addEventListener('input', function (ev) {
+    const t = ev.target;
+    if (!t || !t.hasAttribute || !t.hasAttribute('data-bi')) return;
+    const it = draftItems[parseInt(t.getAttribute('data-bi'), 10)];
+    if (it) it[t.getAttribute('data-f')] = t.value;      // सिर्फ़ याद रखो, दुबारा मत बनाओ
+  });
+  $('blItemList').addEventListener('click', function (ev) {
+    const t = ev.target.closest ? ev.target.closest('[data-rmbi],[data-birate]') : null;
+    if (!t) return;
+    if (t.hasAttribute('data-rmbi')) {
+      const i = parseInt(t.getAttribute('data-rmbi'), 10);
+      if (draftItems[i] && String(draftItems[i].name || '').trim() && !confirm('"' + draftItems[i].name + '" हटाना है?')) return;
+      draftItems.splice(i, 1);
+    } else {
+      const q = t.getAttribute('data-birate').split(':');
+      const it = draftItems[parseInt(q[0], 10)];
+      if (it) it.rateBy = q[1];
+    }
+    renderItemList();
+  });
+
   // ══════════════════ खरीद की screen ══════════════════
   let draftBuy = null;
   let draftLine = null;        // popup में खुला सामान — असली line की नक़ल, "जोड़ो" दबाने पर ही लगती है
@@ -1242,7 +1366,7 @@
   function newLine() { return { item: '', party: '', weigh: 'perBag', rateBy: 'bag', bags: '', bagKg: '', totalKg: '', rate: '', expenses: [] }; }
   function blankBuy() {
     // सामान शुरू में एक भी नहीं — "➕ सामान जोड़ो" से popup खुलेगा
-    return { date: todayLocal(), vehicle: '', party: '', multiParty: false, basis: 'weight', lines: [], expenses: [] };
+    return { date: todayLocal(), vehicle: '', party: '', multiParty: false, basis: 'weight', lines: [], expenses: [], partyExpenses: {} };
   }
   function lineParty(l) { return String((l && l.party) || '').trim() || String((draftBuy && draftBuy.party) || '').trim(); }
 
@@ -1300,6 +1424,7 @@
       '</div>';
     });
     $('bLines').innerHTML = h;
+    renderPartyExp();
     $('bExp').innerHTML = expRows(draftBuy.expenses, 'T');
     document.querySelectorAll('#bBasis button').forEach(function (b) {
       b.className = b.getAttribute('data-basis') === draftBuy.basis ? 'on' : '';
@@ -1324,8 +1449,9 @@
     const L = core.buyLists();
     const l = draftLine;
     const perBag = lineWeigh(l) === 'perBag', byQtl = lineRateBy(l) === 'quintal';
+    const master = findBuyItem(L.items, l.item);
     let h = '<label style="margin-top:0">सामान</label>' +
-      '<select data-m="item">' + optsHtml(L.items, l.item) + '</select>';
+      '<select data-m="item">' + optsHtml(L.items.map(function (x) { return x.name; }), l.item) + '</select>';
     if (draftBuy.multiParty) {
       h += '<label>इस सामान का सप्लायर</label>' +
         '<select data-m="party">' + optsHtml(L.parties, l.party) + '</select>' +
@@ -1342,6 +1468,11 @@
         '<button data-mrate="bag"' + (!byQtl ? ' class="on"' : '') + '>₹ / बोरा</button>' +
         '<button data-mrate="quintal"' + (byQtl ? ' class="on"' : '') + '>₹ / क्विंटल</button>' +
       '</div>' +
+      (perBag && master && master.kgs.length > 1
+        ? '<label>बोरे का वज़न</label><div class="chips2">' + master.kgs.map(function (k) {
+            return '<button data-mkg="' + k + '"' + (Number(l.bagKg) === k ? ' class="on"' : '') + '>' + k + ' kg</button>';
+          }).join('') + '</div>'
+        : '') +
       '<div class="row3">' +
         '<div><label>बोरे</label><input type="number" inputmode="numeric" step="any" data-m="bags" value="' + esc(l.bags) + '"></div>' +
         (perBag
@@ -1352,12 +1483,57 @@
       '<div class="hint" style="margin-top:6px">' + (perBag
         ? 'बोरे × एक बोरे का kg से कुल वज़न बन जाएगा।'
         : 'हर बोरे का वज़न बराबर न हो (खल्ली, धान) तो कुल kg यहाँ भरो — बोरे सिर्फ़ गिनती के लिए।') + '</div>' +
-      '<label>इसी सामान के ख़र्च (गद्दी, टैक्स…)</label>' + expRows(l.expenses, 'M') +
-      '<button class="btn ghost sm" data-addexp="M" style="width:100%">➕ ख़र्च</button>' +
+      /* ख़र्च यहाँ नहीं पूछे जाते — गद्दी/टैक्स सप्लायर के सारे सामान पर लगते हैं,
+         किसी एक सामान पर नहीं। पुरानी खरीद में जो line-ख़र्च भरे थे वे दिखते
+         रहते हैं ताकि कोई पुराना हिसाब चुपचाप न बदल जाए।                  */
+      (l.expenses && l.expenses.length
+        ? '<label>इस सामान के पुराने ख़र्च</label>' + expRows(l.expenses, 'M') +
+          '<div class="hint" style="margin-top:6px">नए ढाँचे में ये ख़र्च सप्लायर पर लगते हैं। ' +
+          'चाहो तो यहाँ से ✕ करके नीचे "सप्लायर के ख़र्च" में डाल दो।</div>'
+        : '') +
       '<div class="res" id="imRes"></div>';
     $('imBody').innerHTML = h;
     recalcItemModal();
   }
+  /* सामान चुनते ही उसकी मास्टर जानकारी लग जाती है — वज़न और भाव का तरीक़ा।
+     यही इसका मक़सद है: बार-बार वही चीज़ न भरनी पड़े।                      */
+  function applyItemDefaults() {
+    const m = findBuyItem(core.buyLists().items, draftLine.item);
+    if (!m) return;
+    draftLine.rateBy = m.rateBy;
+    if (m.kgs.length) {
+      draftLine.weigh = 'perBag';
+      // कई वज़न हों तो पहला भर दो; ऊपर चिप्स से बदला जा सकता है
+      if (m.kgs.indexOf(Number(draftLine.bagKg)) < 0) draftLine.bagKg = m.kgs[0];
+      draftLine.totalKg = '';
+    } else {
+      draftLine.weigh = 'total';   // हर बोरा कम-ज़्यादा — कुल kg भरा जाएगा
+      draftLine.bagKg = '';
+    }
+  }
+
+  // ── सप्लायर के ख़र्च (गद्दी, टैक्स…) — हर सप्लायर का अपना ढेर
+  let pexKeys = [];
+  function renderPartyExp() {
+    if (!draftBuy.partyExpenses || typeof draftBuy.partyExpenses !== 'object') draftBuy.partyExpenses = {};
+    // ट्रक में जो सप्लायर सचमुच मौजूद हैं, उन्हीं के ख़र्च पूछो
+    const seen = {};
+    pexKeys = [];
+    draftBuy.lines.forEach(function (l) {
+      const n = lineParty(l);
+      if (!seen[n]) { seen[n] = 1; pexKeys.push(n); }
+    });
+    if (!pexKeys.length) pexKeys = [String(draftBuy.party || '').trim()];
+    let h = '';
+    pexKeys.forEach(function (name, i) {
+      const list = draftBuy.partyExpenses[name] || (draftBuy.partyExpenses[name] = []);
+      h += (pexKeys.length > 1 ? '<label' + (i ? '' : ' style="margin-top:0"') + '>' + esc(name || '(सप्लायर नहीं चुना)') + '</label>' : '') +
+        expRows(list, 'P' + i) +
+        '<button class="btn ghost sm" data-addexp="P' + i + '" style="width:100%">➕ ख़र्च</button>';
+    });
+    $('bPex').innerHTML = h;
+  }
+
   function recalcItemModal() {
     if (!draftLine || !$('imRes')) return;
     const x = purchaseCalc({ basis: 'weight', party: draftBuy.party, lines: [draftLine], expenses: [] }).lines[0];
@@ -1373,8 +1549,9 @@
     r.lines.forEach(function (x, i) {
       const el = $('lres' + i);
       if (!el) return;
+      const ex = x.lineExp + x.partyExp;
       el.textContent = x.kg > 0
-        ? x.qtl.toFixed(2) + ' क्विं · मूल ' + rs(x.basic) + (x.lineExp ? ' + ख़र्च ' + rs(x.lineExp) : '') +
+        ? x.qtl.toFixed(2) + ' क्विं · मूल ' + rs(x.basic) + (ex ? ' + ख़र्च ' + rs(ex) : '') +
           (x.share ? ' + भाड़े का हिस्सा ' + rs(x.share) : '') +
           ' → ' + rs(x.perQuintal) + '/क्विं' + (x.perBag != null ? ' · ' + rs(x.perBag) + '/बोरा' : '')
         : 'वज़न और रेट भरो';
@@ -1391,8 +1568,8 @@
       });
       h += '</tbody></table></div>' +
         '<div class="kv" style="margin-top:8px">कुल ' + r.qtl.toFixed(2) + ' क्विंटल · ' + r.bags + ' बोरे<br>' +
-        'मूल ' + rs(r.basic) + ' + सामान के ख़र्च ' + rs(r.lineExp) + ' + साझा ख़र्च ' + rs(r.tripExp) +
-        ' = <b>' + rs(r.total) + '</b></div>';
+        'मूल ' + rs(r.basic) + ' + सप्लायर के ख़र्च ' + rs(r.partyExp + r.lineExp) +
+        ' + साझा ख़र्च ' + rs(r.tripExp) + ' = <b>' + rs(r.total) + '</b></div>';
     }
     $('bResult').innerHTML = h;
   }
@@ -1562,6 +1739,11 @@
   function lineExpList(prefix) {
     if (prefix === 'T') return draftBuy.expenses;            // पूरे ट्रक के साझा ख़र्च
     if (prefix === 'M') return draftLine ? draftLine.expenses : [];   // popup में खुले सामान के
+    if (prefix.charAt(0) === 'P') {                          // किसी सप्लायर के ख़र्च
+      const name = pexKeys[parseInt(prefix.slice(1), 10)];
+      if (name == null) return [];
+      return draftBuy.partyExpenses[name] || (draftBuy.partyExpenses[name] = []);
+    }
     const i = parseInt(prefix.slice(1), 10);
     return draftBuy.lines[i] ? draftBuy.lines[i].expenses : [];
   }
@@ -1569,7 +1751,11 @@
     const t = ev.target;
     if (!t || !t.hasAttribute) return;
     if (t.hasAttribute('data-m')) {                            // popup का कोई खाना
-      if (draftLine) { draftLine[t.getAttribute('data-m')] = t.value; recalcItemModal(); }
+      if (!draftLine) return;
+      const f = t.getAttribute('data-m');
+      draftLine[f] = t.value;
+      // सामान बदला तो उसका वज़न/भाव अपने-आप लग जाता है, इसलिए पूरा popup दुबारा
+      if (f === 'item') { applyItemDefaults(); renderItemModal(); } else recalcItemModal();
     } else if (t.hasAttribute('data-l')) {
       const l = draftBuy.lines[parseInt(t.getAttribute('data-l'), 10)];
       if (l) { l[t.getAttribute('data-f')] = t.value; recalcBuy(); }
@@ -1586,7 +1772,7 @@
     }
   }
   function onBuyClick(ev) {
-    const t = ev.target.closest ? ev.target.closest('[data-rmline],[data-editline],[data-addexp],[data-rmexp],[data-mweigh],[data-mrate]') : null;
+    const t = ev.target.closest ? ev.target.closest('[data-rmline],[data-editline],[data-addexp],[data-rmexp],[data-mweigh],[data-mrate],[data-mkg]') : null;
     if (!t) return;
     const inModal = !!(t.closest && t.closest('#itemModal'));
     if (t.hasAttribute('data-editline')) { openItemModal(parseInt(t.getAttribute('data-editline'), 10)); return; }
@@ -1594,14 +1780,15 @@
       if (!confirm('यह सामान हटाना है?')) return;
       draftBuy.lines.splice(parseInt(t.getAttribute('data-rmline'), 10), 1);
     } else if (t.hasAttribute('data-addexp')) {
-      const list = lineExpList(t.getAttribute('data-addexp') === 'M' ? 'M' : 'L' + t.getAttribute('data-addexp'));
-      list.push({ name: '', kind: 'percent', value: '' });
+      lineExpList(t.getAttribute('data-addexp')).push({ name: '', kind: 'percent', value: '' });
     } else if (t.hasAttribute('data-rmexp')) {
       lineExpList(t.getAttribute('data-rmexp')).splice(parseInt(t.getAttribute('data-i'), 10), 1);
     } else if (t.hasAttribute('data-mweigh')) {
       if (draftLine) draftLine.weigh = t.getAttribute('data-mweigh');
     } else if (t.hasAttribute('data-mrate')) {
       if (draftLine) draftLine.rateBy = t.getAttribute('data-mrate');
+    } else if (t.hasAttribute('data-mkg')) {
+      if (draftLine) draftLine.bagKg = t.getAttribute('data-mkg');
     }
     if (inModal) renderItemModal(); else renderBuyForm();
   }
@@ -1635,7 +1822,9 @@
   });
 
   $('saveBuyLists').onclick = function () {
-    const l = core.setBuyLists($('blItems').value, $('blParties').value);
+    const l = core.setBuyLists(draftItems, $('blParties').value);
+    draftItems = l.items.map(function (x) { return { name: x.name, kgs: x.kgs.join(', '), rateBy: x.rateBy }; });
+    renderItemList();
     $('buyListsInfo').textContent = l.items.length + ' सामान · ' + l.parties.length + ' सप्लायर';
     toast('✔ खरीद की लिस्ट save हुई', 'ok');
   };
