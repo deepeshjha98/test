@@ -10,7 +10,7 @@
 (function (root) {
   'use strict';
 
-  const APP_VERSION = '1.11.0';
+  const APP_VERSION = '1.12.0';
   const K = { api: 'jcm.api', key: 'jcm.key', lists: 'jcm.lists', queue: 'jcm.queue', draft: 'jcm.draft', shift: 'jcm.shift', rates: 'jcm.rates', buys: 'jcm.buys', buyLists: 'jcm.buylists' };
   const DEFAULT_SHIFT = { start: '08:30', finish: '18:30' };   // मिल का सामान्य समय; ⚙ सेटिंग से बदला जा सकता है
   // पैसे की दरें — ⚙ सेटिंग से बदली जा सकती हैं
@@ -128,13 +128,20 @@
 
   const EXPENSE_KINDS = ['flat', 'perQuintal', 'perBag', 'percent'];
 
+  /* भाव किस हिसाब से लिखा होता है — चार असली सूरतें:
+       bag      ₹/बोरा या ₹/कार्टून   (चोकर ₹1000/बोरा)
+       quintal  ₹/क्विंटल             (चना ₹7050/क्विं)
+       unit     ₹/पैकेट-पाउच-बोतल      (कभी-कभी पाउच का भाव लिखा होता है)
+       lump     एकमुश्त कुल रक़म        (तेल वाला 5 कार्टून का एक साथ ₹15,000 लिखता है)  */
+  const RATE_BYS = ['bag', 'quintal', 'unit', 'lump'];
+
   /* सामान की मास्टर जानकारी। पहले सिर्फ़ नाम रखा जाता था; अब नाम के साथ
      बोरे का वज़न और भाव का तरीक़ा भी, ताकि हर entry में दुबारा न भरना पड़े।
        kgs खाली  → हर बोरे का वज़न कम-ज़्यादा (खल्ली, धान) — कुल kg भरा जाएगा
        kgs में एक → वही वज़न अपने-आप भर जाएगा (चोकर 35, चना 30)
        kgs में कई → एक ही सामान दो पैक में आता है, entry में चुन लेना है     */
   function buyItem(x) {
-    if (typeof x === 'string') return { name: x.trim(), kgs: [], rateBy: 'bag' };
+    if (typeof x === 'string') return { name: x.trim(), kgs: [], packName: '', units: 0, unitName: '', rateBy: 'bag' };
     // अंक ऐसे निकालो कि ऋण-चिह्न साथ रहे — वरना "-5" चुपचाप 5 बन जाता
     const src = Array.isArray(x && x.kgs) ? x.kgs
       : (String((x && x.kgs) || '').match(/-?\d*\.?\d+/g) || []);
@@ -144,8 +151,15 @@
       if (isFinite(n) && n > 0 && !seen[n]) { seen[n] = 1; kgs.push(n); }
     });
     kgs.sort(function (a, b) { return a - b; });
-    return { name: String((x && x.name) || '').trim(), kgs: kgs,
-             rateBy: (x && x.rateBy) === 'quintal' ? 'quintal' : 'bag' };
+    const units = Math.max(0, Number(x && x.units) || 0);
+    return {
+      name: String((x && x.name) || '').trim(),
+      kgs: kgs,
+      packName: String((x && x.packName) || '').trim(),   // बोरा / कार्टून / बैग
+      units: units,                                       // एक पैक में कितने छोटे पैकेट
+      unitName: String((x && x.unitName) || '').trim(),   // पैकेट / पाउच / बोतल
+      rateBy: RATE_BYS.indexOf(x && x.rateBy) >= 0 ? x.rateBy : 'bag'
+    };
   }
   function cleanBuyItems(list) {
     const out = [], seen = {};
@@ -203,7 +217,7 @@
     return (l && l.mode === 'quintal') ? 'total' : 'perBag';      // पुराने रिकॉर्ड
   }
   function lineRateBy(l) {
-    if (l && (l.rateBy === 'bag' || l.rateBy === 'quintal')) return l.rateBy;
+    if (l && RATE_BYS.indexOf(l.rateBy) >= 0) return l.rateBy;
     return (l && l.mode === 'quintal') ? 'quintal' : 'bag';       // पुराने रिकॉर्ड
   }
   function lineKg(l) {
@@ -214,13 +228,21 @@
     }
     return Math.max(0, Number(l && l.bags) || 0) * Math.max(0, Number(l && l.bagKg) || 0);
   }
+  function lineUnitsPer(l) { return Math.max(0, Number(l && l.units) || 0); }
   function lineBase(l) {
     const bags = Math.max(0, Number(l && l.bags) || 0);
     const kg = lineKg(l);
     const rate = Math.max(0, Number(l && l.rate) || 0);
-    // मूल रक़म भाव के हिसाब से — बोरे के भाव में बोरों से, क्विंटल के भाव में वज़न से
-    const basic = lineRateBy(l) === 'quintal' ? (kg / 100) * rate : bags * rate;
-    return { bags: bags, kg: kg, basic: basic };
+    const units = bags * lineUnitsPer(l);          // कुल छोटे पैकेट (50 बोरे × 16 पाउच)
+    let basic;
+    switch (lineRateBy(l)) {
+      case 'quintal': basic = (kg / 100) * rate; break;
+      case 'unit': basic = units * rate; break;
+      // एकमुश्त: जो रक़म लिखी है वही कुल है, गिनती से गुणा नहीं होती
+      case 'lump': basic = rate; break;
+      default: basic = bags * rate;
+    }
+    return { bags: bags, kg: kg, units: units, basic: basic };
   }
 
   /* पूरा हिसाब। लौटाता है हर line का असली रेट (₹/क्विंटल और ₹/बोरा) और ट्रक का जोड़। */
@@ -253,16 +275,26 @@
       return {
         item: (l && l.item) || '', party: (l && l.party) || truckParty,
         weigh: lineWeigh(l), rateBy: lineRateBy(l),
-        bags: b.bags, kg: b.kg, qtl: b.kg / 100, rate: Number(l && l.rate) || 0,
+        packName: String((l && l.packName) || '').trim() || 'बोरा',
+        unitName: String((l && l.unitName) || '').trim() || 'पैकेट',
+        unitsPer: lineUnitsPer(l),
+        bags: b.bags, kg: b.kg, qtl: b.kg / 100, units: b.units, rate: Number(l && l.rate) || 0,
         basic: b.basic, lineExp: lineExp, partyExp: 0, value: b.basic + lineExp,
-        share: 0, total: 0, perKg: null, perQuintal: null, perBag: null
+        share: 0, total: 0, perKg: null, perQuintal: null, perBag: null, perUnit: null
       };
     });
 
     /* ख़र्च का बँटवारा — किसी हिस्से के जोड़ पर ख़र्च लगाकर उसी हिस्से की
        lines में बाँटना। आधार शून्य हो (वज़न भरा ही न हो) तो बराबर-बराबर,
        ताकि ख़र्च कहीं गुम न हो।                                        */
-    const weightOf = function (r) { return basis === 'value' ? (r.basic + r.lineExp) : basis === 'bags' ? r.bags : r.kg; };
+    /* वज़न के आधार पर बाँटते समय जिस line का वज़न ही नहीं (तेल के कार्टून),
+       उसे शून्य हिस्सा मिलता और उसका असली रेट कम दिखता। इसलिए ऐसी line पर
+       चुपचाप बोरों/कार्टून की गिनती को आधार मान लिया जाता है।              */
+    const weightOf = function (r) {
+      if (basis === 'value') return r.basic + r.lineExp;
+      if (basis === 'bags') return r.bags;
+      return r.kg > 0 ? r.kg : r.bags;
+    };
     function spread(group, amount, into) {
       const tw = group.reduce(function (t, r) { return t + weightOf(r); }, 0);
       group.forEach(function (r) {
@@ -290,8 +322,9 @@
     rows.forEach(function (r) { r.value = r.basic + r.lineExp + r.partyExp; });
 
     const tot = rows.reduce(function (t, r) {
-      t.bags += r.bags; t.kg += r.kg; t.basic += r.basic; t.lineExp += r.lineExp; t.value += r.value; return t;
-    }, { bags: 0, kg: 0, basic: 0, lineExp: 0, value: 0 });
+      t.bags += r.bags; t.kg += r.kg; t.units += r.units;
+      t.basic += r.basic; t.lineExp += r.lineExp; t.value += r.value; return t;
+    }, { bags: 0, kg: 0, units: 0, basic: 0, lineExp: 0, value: 0 });
 
     // साझा ख़र्च — भाड़ा, अनलोडिंग… ये पूरे ट्रक के जोड़ पर लगते हैं
     const tripExp = sumExpenses(p.expenses, { kg: tot.kg, bags: tot.bags, basic: tot.basic });
@@ -300,12 +333,13 @@
       r.total = r.value + r.share;
       if (r.kg > 0) { r.perKg = r.total / r.kg; r.perQuintal = r.perKg * 100; }
       if (r.bags > 0) r.perBag = r.total / r.bags;
+      if (r.units > 0) r.perUnit = r.total / r.units;     // ₹ प्रति पाउच/पैकेट/बोतल
     });
 
     const grand = tot.value + tripExp;
     return {
       basis: basis, lines: rows,
-      bags: tot.bags, kg: tot.kg, qtl: tot.kg / 100,
+      bags: tot.bags, kg: tot.kg, qtl: tot.kg / 100, units: tot.units,
       basic: tot.basic, lineExp: tot.lineExp, partyExp: partyExpTotal, tripExp: tripExp, total: grand,
       perKg: tot.kg > 0 ? grand / tot.kg : null,
       perQuintal: tot.kg > 0 ? (grand / tot.kg) * 100 : null
@@ -723,7 +757,8 @@
       saveBuy: function (b) {
         if (!b || !Array.isArray(b.lines) || !b.lines.length) throw new Error('कम से कम एक सामान डालो।');
         const calc = purchaseCalc(b);
-        if (!(calc.kg > 0)) throw new Error('वज़न भरो — बोरे × kg, या क्विंटल।');
+        // तेल/सूजी जैसे सामान का वज़न लिखा ही नहीं होता — तब कार्टून की गिनती काफ़ी है
+        if (!(calc.kg > 0) && !(calc.bags > 0)) throw new Error('वज़न भरो, या बोरे/कार्टून की गिनती।');
         const clean = {
           id: b.id || uuid(),
           date: b.date || todayLocal(now()),
@@ -735,6 +770,7 @@
             return {
               item: String(l.item || '').trim(), party: String(l.party || '').trim(),
               weigh: lineWeigh(l), rateBy: lineRateBy(l),
+              packName: String(l.packName || '').trim(), units: lineUnitsPer(l), unitName: String(l.unitName || '').trim(),
               bags: Number(l.bags) || 0, bagKg: Number(l.bagKg) || 0, totalKg: lineWeigh(l) === 'total' ? lineKg(l) : 0,
               rate: Number(l.rate) || 0,
               expenses: cleanExpList(l.expenses)
@@ -778,17 +814,22 @@
           if (from && b.date < from) return;
           if (to && b.date > to) return;
           purchaseCalc(b).lines.forEach(function (r) {
-            if (!(r.kg > 0)) return;
+            // बिना वज़न वाला सामान (तेल के कार्टून) भी गिना जाए — पहले छूट जाता था
+            if (!(r.kg > 0) && !(r.bags > 0)) return;
             const k = r.item || '(बिना नाम)';
-            const e = byItem[k] || (byItem[k] = { item: k, kg: 0, bags: 0, total: 0, lines: 0, parties: {} });
-            e.kg += r.kg; e.bags += r.bags; e.total += r.total; e.lines++;
+            const e = byItem[k] || (byItem[k] = { item: k, kg: 0, bags: 0, units: 0, total: 0, lines: 0,
+                                                 packName: r.packName, unitName: r.unitName, parties: {} });
+            e.kg += r.kg; e.bags += r.bags; e.units += r.units; e.total += r.total; e.lines++;
             if (r.party) e.parties[r.party] = true;
           });
         });
         return Object.keys(byItem).map(function (k) {
           const e = byItem[k];
-          return { item: e.item, lines: e.lines, kg: e.kg, qtl: e.kg / 100, bags: e.bags, total: e.total,
-                   perQuintal: e.total / (e.kg / 100), perBag: e.bags > 0 ? e.total / e.bags : null,
+          return { item: e.item, lines: e.lines, kg: e.kg, qtl: e.kg / 100, bags: e.bags, units: e.units,
+                   total: e.total, packName: e.packName, unitName: e.unitName,
+                   perQuintal: e.kg > 0 ? e.total / (e.kg / 100) : null,
+                   perBag: e.bags > 0 ? e.total / e.bags : null,
+                   perUnit: e.units > 0 ? e.total / e.units : null,
                    parties: Object.keys(e.parties).sort() };
         }).sort(function (a, b2) { return b2.total - a.total; });
       },
@@ -867,7 +908,7 @@
     return core;
   }
 
-  const api = { createCore: createCore, validate: validate, uuid: uuid, todayLocal: todayLocal, durationText: durationText, fmtDate: fmtDate, cleanNames: cleanNames, pickUpdate: pickUpdate, normalizeBuyParty: normalizeBuyParty, buyItem: buyItem, cleanBuyItems: cleanBuyItems, findBuyItem: findBuyItem, lineWeigh: lineWeigh, lineRateBy: lineRateBy, lineKg: lineKg, purchaseCalc: purchaseCalc, expenseAmount: expenseAmount, EXPENSE_KINDS: EXPENSE_KINDS, splitShift: splitShift, hhmm: hhmm, DEFAULT_SHIFT: DEFAULT_SHIFT, APP_VERSION: APP_VERSION };
+  const api = { createCore: createCore, validate: validate, uuid: uuid, todayLocal: todayLocal, durationText: durationText, fmtDate: fmtDate, cleanNames: cleanNames, pickUpdate: pickUpdate, normalizeBuyParty: normalizeBuyParty, RATE_BYS: RATE_BYS, buyItem: buyItem, cleanBuyItems: cleanBuyItems, findBuyItem: findBuyItem, lineWeigh: lineWeigh, lineRateBy: lineRateBy, lineKg: lineKg, purchaseCalc: purchaseCalc, expenseAmount: expenseAmount, EXPENSE_KINDS: EXPENSE_KINDS, splitShift: splitShift, hhmm: hhmm, DEFAULT_SHIFT: DEFAULT_SHIFT, APP_VERSION: APP_VERSION };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.JCM = api;
 
@@ -1044,7 +1085,7 @@
       $('api').value = core.getApi(); $('key').value = core.getKey();
       shiftInfo(); ratesInfo(); fillLocalLists(); listsInfo(); dbInfo();
       const bl = core.buyLists();
-      draftItems = bl.items.map(function (x) { return { name: x.name, kgs: x.kgs.join(', '), rateBy: x.rateBy }; });
+      draftItems = bl.items.map(itemToDraft);
       renderItemList();
       $('blParties').value = bl.parties.join('\n');
       $('buyListsInfo').textContent = bl.items.length + ' सामान · ' + bl.parties.length + ' सप्लायर';
@@ -1311,14 +1352,24 @@
   // ══════════════ ⚙ में सामान की सूची (नाम + बोरे का वज़न) ══════════════
   /* नाम और वज़न के खानों में टाइप करते समय पूरा हिस्सा दुबारा नहीं बनता —
      वरना हर अक्षर पर keyboard बंद हो जाता। ढाँचा बदले तभी दुबारा बनता है। */
+  /* मास्टर का record → form वाली नक़ल। यह एक ही जगह पर रहे, क्योंकि पहले यह
+     दो जगह लिखा था और दोनों में packName/units/unitName छूट गए थे — नतीजा:
+     कोई भी सामान बदलते ही बाक़ी सबकी पैक-जानकारी मिट जाती।                 */
+  function itemToDraft(x) {
+    return { name: x.name, kgs: x.kgs.join(', '), packName: x.packName,
+             units: x.units || '', unitName: x.unitName, rateBy: x.rateBy };
+  }
+
   let draftItems = [];
   let draftItem = null;      // popup में खुला सामान (नक़ल)
   let draftItemAt = -1;      // -1 = नया
 
   // टाइल पर बस इतना: नाम, और छोटे अक्षरों में वज़न + भाव
+  const BRIEF_RATE = { bag: 'पैक', quintal: 'क्विं', unit: 'पैकेट', lump: 'एकमुश्त' };
   function itemBrief(it) {
     const kgs = String(it.kgs || '').replace(/\s*,\s*/g, ',').replace(/\s+/g, ',').trim();
-    return (kgs || '—') + ' · ' + (it.rateBy === 'quintal' ? 'क्विं' : 'बोरा');
+    const n = Math.max(0, Number(it.units) || 0);
+    return (kgs || '—') + (n ? '×' + n : '') + ' · ' + (BRIEF_RATE[it.rateBy] || 'पैक');
   }
 
   function renderItemList() {
@@ -1333,7 +1384,7 @@
 
   function saveItemsNow() {
     const l = core.setBuyLists(draftItems, $('blParties').value);
-    draftItems = l.items.map(function (x) { return { name: x.name, kgs: x.kgs.join(', '), rateBy: x.rateBy }; });
+    draftItems = l.items.map(itemToDraft);
     renderItemList();
     $('buyListsInfo').textContent = l.items.length + ' सामान · ' + l.parties.length + ' सप्लायर';
     return l;
@@ -1350,21 +1401,38 @@
   }
   function closeMasterModal() { $('imtModal').hidden = true; draftItem = null; draftItemAt = -1; }
 
+  const RATE_LABEL = { bag: '₹ / पैक', quintal: '₹ / क्विंटल', unit: '₹ / पैकेट', lump: 'एकमुश्त रक़म' };
+
   function renderMasterModal() {
-    const it = draftItem, qtl = it.rateBy === 'quintal';
-    $('imtBody').innerHTML =
-      '<label style="margin-top:0">नाम</label>' +
+    const it = draftItem;
+    const pack = String(it.packName || '').trim() || 'बोरा';
+    const unit = String(it.unitName || '').trim() || 'पैकेट';
+    let h = '<label style="margin-top:0">नाम</label>' +
       '<input type="text" data-mi="name" value="' + esc(it.name) + '" placeholder="चना">' +
-      '<label>एक बोरे का वज़न (kg)</label>' +
-      '<input type="text" inputmode="decimal" data-mi="kgs" value="' + esc(it.kgs) + '" placeholder="30">' +
-      '<div class="hint" style="margin-top:6px">हर बोरे का वज़न कम-ज़्यादा हो (खल्ली, धान) तो ' +
-        '<b>खाली छोड़ दो</b> — तब कुल kg पूछा जाएगा।<br>' +
+      '<div class="row2">' +
+        '<div><label>पैक को क्या कहें?</label>' +
+          '<input type="text" data-mi="packName" value="' + esc(it.packName || '') + '" placeholder="बोरा"></div>' +
+        '<div><label>एक ' + esc(pack) + ' का kg</label>' +
+          '<input type="text" inputmode="decimal" data-mi="kgs" value="' + esc(it.kgs) + '" placeholder="30"></div>' +
+      '</div>' +
+      '<div class="hint" style="margin-top:6px">पैक का नाम — बोरा, कार्टून, बैग…<br>' +
+        'हर पैक का वज़न कम-ज़्यादा हो (खल्ली, धान) तो kg <b>खाली छोड़ दो</b>। ' +
         'एक ही सामान दो पैक में आता हो तो दोनों लिखो — जैसे <b>30, 50</b>।</div>' +
-      '<label>भाव किस हिसाब से लिखा होता है?</label>' +
-      '<div class="chips2" style="margin-bottom:0">' +
-        '<button data-mirate="bag"' + (qtl ? '' : ' class="on"') + '>₹ / बोरा</button>' +
-        '<button data-mirate="quintal"' + (qtl ? ' class="on"' : '') + '>₹ / क्विंटल</button>' +
-      '</div>';
+      '<label>एक ' + esc(pack) + ' के अंदर छोटे पैकेट?</label>' +
+      '<div class="row2">' +
+        '<div><input type="number" inputmode="numeric" step="any" data-mi="units" value="' + esc(it.units || '') + '" placeholder="0"></div>' +
+        '<div><input type="text" data-mi="unitName" value="' + esc(it.unitName || '') + '" placeholder="पैकेट / पाउच / बोतल"></div>' +
+      '</div>' +
+      '<div class="hint" style="margin-top:6px">सूजी का 25kg बैग जिसमें 500g के 50 पैकेट → <b>50 · पैकेट</b>।<br>' +
+        'तेल का कार्टून जिसमें 16 पाउच → <b>16 · पाउच</b>। न हो तो खाली छोड़ो।</div>' +
+      '<label>भाव किस हिसाब से लिखा होता है?</label><div class="chips2" style="margin-bottom:0">';
+    RATE_BYS.forEach(function (k) {
+      const lbl = k === 'bag' ? '₹ / ' + esc(pack) : k === 'unit' ? '₹ / ' + esc(unit) : RATE_LABEL[k];
+      h += '<button data-mirate="' + k + '"' + (it.rateBy === k ? ' class="on"' : '') + '>' + lbl + '</button>';
+    });
+    h += '</div><div class="hint" style="margin-top:6px">सप्लायर कई कार्टून की रक़म एक साथ लिखता हो ' +
+      '(5 कार्टून = ₹15,000) तो <b>एकमुश्त रक़म</b> चुनो।</div>';
+    $('imtBody').innerHTML = h;
   }
 
   $('imtClose').onclick = closeMasterModal;
@@ -1392,7 +1460,19 @@
   };
   $('imtModal').addEventListener('input', function (ev) {
     const t = ev.target;
-    if (t && t.hasAttribute && t.hasAttribute('data-mi') && draftItem) draftItem[t.getAttribute('data-mi')] = t.value;
+    if (!t || !t.hasAttribute || !t.hasAttribute('data-mi') || !draftItem) return;
+    draftItem[t.getAttribute('data-mi')] = t.value;
+    // नाम टाइप करते समय popup दुबारा नहीं बनाया जाता (keyboard बंद हो जाता),
+    // इसलिए chips के लेबल सिर्फ़ यहीं सीधे बदल दिए जाते हैं
+    const f = t.getAttribute('data-mi');
+    if (f === 'packName' || f === 'unitName') {
+      const pack = String(draftItem.packName || '').trim() || 'बोरा';
+      const unit = String(draftItem.unitName || '').trim() || 'पैकेट';
+      const b = $('imtBody').querySelector('[data-mirate="bag"]');
+      const u = $('imtBody').querySelector('[data-mirate="unit"]');
+      if (b) b.textContent = '₹ / ' + pack;
+      if (u) u.textContent = '₹ / ' + unit;
+    }
   });
   $('imtModal').addEventListener('click', function (ev) {
     const t = ev.target.closest ? ev.target.closest('[data-mirate]') : null;
@@ -1411,7 +1491,7 @@
   let draftLineAt = -1;        // -1 = नया सामान, वरना draftBuy.lines का index
   const KIND_LABEL = { flat: 'सीधी रक़म ₹', perQuintal: '₹ / क्विंटल', perBag: '₹ / बोरा', percent: '% मूल पर' };
 
-  function newLine() { return { item: '', party: '', weigh: 'perBag', rateBy: 'bag', bags: '', bagKg: '', totalKg: '', rate: '', expenses: [] }; }
+  function newLine() { return { item: '', party: '', weigh: 'perBag', rateBy: 'bag', packName: '', units: '', unitName: '', bags: '', bagKg: '', totalKg: '', rate: '', expenses: [] }; }
   function blankBuy() {
     // सामान शुरू में एक भी नहीं — "➕ सामान जोड़ो" से popup खुलेगा
     return { date: todayLocal(), vehicle: '', party: '', multiParty: false, basis: 'weight', lines: [], expenses: [], partyExpenses: {} };
@@ -1455,10 +1535,15 @@
       h = '<div class="card"><div class="empty">अभी कोई सामान नहीं।<br>नीचे "➕ सामान जोड़ो" दबाओ।</div></div>';
     }
     draftBuy.lines.forEach(function (l, i) {
+      const pk = String(l.packName || '').trim() || 'बोरा';
+      const un = String(l.unitName || '').trim() || 'पैकेट';
+      const nu = Math.max(0, Number(l.units) || 0);
       const wt = l.weigh === 'total'
-        ? ('कुल ' + esc(l.totalKg || '0') + 'kg, ' + esc(l.bags || '0') + ' बोरे')
-        : (esc(l.bags || '0') + ' बोरे × ' + esc(l.bagKg || '0') + 'kg');
-      const qty = wt + ' · ₹' + esc(l.rate || '0') + (l.rateBy === 'quintal' ? '/क्विं' : '/बोरा');
+        ? (esc(l.bags || '0') + ' ' + esc(pk) + (l.totalKg ? ', कुल ' + esc(l.totalKg) + 'kg' : ''))
+        : (esc(l.bags || '0') + ' ' + esc(pk) + (l.bagKg ? ' × ' + esc(l.bagKg) + 'kg' : ''));
+      const rbl = l.rateBy === 'quintal' ? '/क्विं' : l.rateBy === 'unit' ? '/' + esc(un)
+                : l.rateBy === 'lump' ? ' एकमुश्त' : '/' + esc(pk);
+      const qty = wt + (nu ? ' × ' + nu + ' ' + esc(un) : '') + ' · ₹' + esc(l.rate || '0') + rbl;
       const pty = String(l.party || '').trim();
       h += '<div class="card lrow">' +
         '<div class="top"><b>' + esc(l.item || '(सामान नहीं चुना)') + '</b></div>' +
@@ -1496,8 +1581,13 @@
   function renderItemModal() {
     const L = core.buyLists();
     const l = draftLine;
-    const perBag = lineWeigh(l) === 'perBag', byQtl = lineRateBy(l) === 'quintal';
+    const perBag = lineWeigh(l) === 'perBag', rb = lineRateBy(l);
     const master = findBuyItem(L.items, l.item);
+    const pack = String(l.packName || '').trim() || 'बोरा';
+    const unit = String(l.unitName || '').trim() || 'पैकेट';
+    const nUnits = lineUnitsPer(l);
+    const rateLbl = rb === 'quintal' ? '₹ / क्विंटल' : rb === 'unit' ? '₹ / ' + unit
+                  : rb === 'lump' ? 'कुल रक़म ₹' : '₹ / ' + pack;
     let h = '<label style="margin-top:0">सामान</label>' +
       '<select data-m="item">' + optsHtml(L.items.map(function (x) { return x.name; }), l.item) + '</select>';
     if (draftBuy.multiParty) {
@@ -1513,8 +1603,10 @@
       '</div>' +
       '<label>भाव किस हिसाब से?</label>' +
       '<div class="chips2">' +
-        '<button data-mrate="bag"' + (!byQtl ? ' class="on"' : '') + '>₹ / बोरा</button>' +
-        '<button data-mrate="quintal"' + (byQtl ? ' class="on"' : '') + '>₹ / क्विंटल</button>' +
+        '<button data-mrate="bag"' + (rb === 'bag' ? ' class="on"' : '') + '>₹ / ' + esc(pack) + '</button>' +
+        '<button data-mrate="quintal"' + (rb === 'quintal' ? ' class="on"' : '') + '>₹ / क्विंटल</button>' +
+        (nUnits ? '<button data-mrate="unit"' + (rb === 'unit' ? ' class="on"' : '') + '>₹ / ' + esc(unit) + '</button>' : '') +
+        '<button data-mrate="lump"' + (rb === 'lump' ? ' class="on"' : '') + '>एकमुश्त</button>' +
       '</div>' +
       (perBag && master && master.kgs.length > 1
         ? '<label>बोरे का वज़न</label><div class="chips2">' + master.kgs.map(function (k) {
@@ -1522,15 +1614,19 @@
           }).join('') + '</div>'
         : '') +
       '<div class="row3">' +
-        '<div><label>बोरे</label><input type="number" inputmode="numeric" step="any" data-m="bags" value="' + esc(l.bags) + '"></div>' +
+        '<div><label>' + esc(pack) + '</label><input type="number" inputmode="numeric" step="any" data-m="bags" value="' + esc(l.bags) + '"></div>' +
         (perBag
-          ? '<div><label>एक बोरा kg</label><input type="number" inputmode="decimal" step="any" data-m="bagKg" value="' + esc(l.bagKg) + '"></div>'
-          : '<div><label>कुल kg</label><input type="number" inputmode="decimal" step="any" data-m="totalKg" value="' + esc(l.totalKg) + '"></div>') +
-        '<div><label>' + (byQtl ? '₹ / क्विंटल' : '₹ / बोरा') + '</label><input type="number" inputmode="decimal" step="any" data-m="rate" value="' + esc(l.rate) + '"></div>' +
+          ? '<div><label>एक ' + esc(pack) + ' kg' + (nUnits ? ' (हो तो)' : '') + '</label><input type="number" inputmode="decimal" step="any" data-m="bagKg" value="' + esc(l.bagKg) + '"></div>'
+          : '<div><label>कुल kg' + (nUnits ? ' (हो तो)' : '') + '</label><input type="number" inputmode="decimal" step="any" data-m="totalKg" value="' + esc(l.totalKg) + '"></div>') +
+        '<div><label>' + esc(rateLbl) + '</label><input type="number" inputmode="decimal" step="any" data-m="rate" value="' + esc(l.rate) + '"></div>' +
       '</div>' +
-      '<div class="hint" style="margin-top:6px">' + (perBag
-        ? 'बोरे × एक बोरे का kg से कुल वज़न बन जाएगा।'
-        : 'हर बोरे का वज़न बराबर न हो (खल्ली, धान) तो कुल kg यहाँ भरो — बोरे सिर्फ़ गिनती के लिए।') + '</div>' +
+      (nUnits
+        ? '<div class="hint" style="margin-top:6px">एक ' + esc(pack) + ' में <b>' + nUnits + ' ' + esc(unit) +
+          '</b>।' + (rb === 'lump' ? ' सप्लायर ने जो कुल रक़म लिखी है वही भरो — ₹/' + esc(pack) + ' और ₹/' + esc(unit) + ' अपने-आप निकलेंगे।' : '') +
+          (l.weigh === 'total' || !l.bagKg ? ' वज़न लिखा न हो तो kg खाली छोड़ दो।' : '') + '</div>'
+        : '<div class="hint" style="margin-top:6px">' + (perBag
+            ? esc(pack) + ' × एक ' + esc(pack) + ' का kg से कुल वज़न बन जाएगा।'
+            : 'हर ' + esc(pack) + ' का वज़न बराबर न हो (खल्ली, धान) तो कुल kg यहाँ भरो — गिनती सिर्फ़ ऊपर।') + '</div>') +
       /* ख़र्च यहाँ नहीं पूछे जाते — गद्दी/टैक्स सप्लायर के सारे सामान पर लगते हैं,
          किसी एक सामान पर नहीं। पुरानी खरीद में जो line-ख़र्च भरे थे वे दिखते
          रहते हैं ताकि कोई पुराना हिसाब चुपचाप न बदल जाए।                  */
@@ -1549,6 +1645,9 @@
     const m = findBuyItem(core.buyLists().items, draftLine.item);
     if (!m) return;
     draftLine.rateBy = m.rateBy;
+    draftLine.packName = m.packName;
+    draftLine.units = m.units || '';
+    draftLine.unitName = m.unitName;
     if (m.kgs.length) {
       draftLine.weigh = 'perBag';
       // कई वज़न हों तो पहला भर दो; ऊपर चिप्स से बदला जा सकता है
@@ -1585,11 +1684,16 @@
   function recalcItemModal() {
     if (!draftLine || !$('imRes')) return;
     const x = purchaseCalc({ basis: 'weight', party: draftBuy.party, lines: [draftLine], expenses: [] }).lines[0];
-    $('imRes').textContent = x.kg > 0
-      ? x.qtl.toFixed(2) + ' क्विं · मूल ' + rs(x.basic) + (x.lineExp ? ' + ख़र्च ' + rs(x.lineExp) : '') +
-        ' → ' + rs(x.perQuintal) + '/क्विं' + (x.perBag != null ? ' · ' + rs(x.perBag) + '/बोरा' : '') +
-        '  (साझा ख़र्च अलग जुड़ेगा)'
-      : 'वज़न और रेट भरो';
+    const per = [];
+    if (x.perQuintal != null) per.push(rs(x.perQuintal) + '/क्विं');
+    if (x.perBag != null) per.push(rs(x.perBag) + '/' + x.packName);
+    if (x.perUnit != null) per.push(rs(x.perUnit) + '/' + x.unitName);
+    $('imRes').textContent = (x.kg > 0 || x.bags > 0)
+      ? (x.kg > 0 ? x.qtl.toFixed(2) + ' क्विं · ' : x.bags + ' ' + x.packName +
+          (x.units ? ' · ' + x.units + ' ' + x.unitName : '') + ' · ') +
+        'मूल ' + rs(x.basic) + (x.lineExp ? ' + ख़र्च ' + rs(x.lineExp) : '') +
+        (per.length ? ' → ' + per.join(' · ') : '') + '  (साझा ख़र्च अलग जुड़ेगा)'
+      : 'गिनती और रेट भरो';
   }
 
   function recalcBuy() {
@@ -1598,24 +1702,35 @@
       const el = $('lres' + i);
       if (!el) return;
       const ex = x.lineExp + x.partyExp;
-      el.textContent = x.kg > 0
-        ? x.qtl.toFixed(2) + ' क्विं · मूल ' + rs(x.basic) + (ex ? ' + ख़र्च ' + rs(ex) : '') +
-          (x.share ? ' + भाड़े का हिस्सा ' + rs(x.share) : '') +
-          ' → ' + rs(x.perQuintal) + '/क्विं' + (x.perBag != null ? ' · ' + rs(x.perBag) + '/बोरा' : '')
-        : 'वज़न और रेट भरो';
+      const per = [];
+      if (x.perQuintal != null) per.push(rs(x.perQuintal) + '/क्विं');
+      if (x.perBag != null) per.push(rs(x.perBag) + '/' + x.packName);
+      if (x.perUnit != null) per.push(rs(x.perUnit) + '/' + x.unitName);
+      el.textContent = (x.kg > 0 || x.bags > 0)
+        ? (x.kg > 0 ? x.qtl.toFixed(2) + ' क्विं · ' : '') + 'मूल ' + rs(x.basic) +
+          (ex ? ' + ख़र्च ' + rs(ex) : '') + (x.share ? ' + भाड़े का हिस्सा ' + rs(x.share) : '') +
+          (per.length ? ' → ' + per.join(' · ') : '')
+        : 'गिनती और रेट भरो';
     });
     let h = '<label style="margin-top:0">नतीजा</label>';
-    if (!(r.kg > 0)) { h += '<div class="empty">वज़न भरते ही यहाँ असली रेट दिखने लगेगा।</div>'; }
+    if (!(r.kg > 0) && !(r.bags > 0)) { h += '<div class="empty">गिनती भरते ही यहाँ असली रेट दिखने लगेगा।</div>'; }
     else {
-      h += '<div class="scroll"><table class="rep"><thead><tr><th>सामान</th><th>क्विंटल</th><th>₹/क्विं</th><th>₹/बोरा</th></tr></thead><tbody>';
+      // जिस चीज़ का कोई मतलब ही नहीं (तेल का क्विंटल) उसका कॉलम मत दिखाओ
+      const anyKg = r.lines.some(function (x) { return x.kg > 0; });
+      const anyUnit = r.lines.some(function (x) { return x.units > 0; });
+      h += '<div class="scroll"><table class="rep"><thead><tr><th>सामान</th>' +
+        (anyKg ? '<th>क्विंटल</th><th>₹/क्विं</th>' : '') +
+        '<th>₹/पैक</th>' + (anyUnit ? '<th>₹/पैकेट</th>' : '') + '</tr></thead><tbody>';
       r.lines.forEach(function (x) {
         h += '<tr><td>' + esc(x.item || '—') + (x.party ? '<br><span style="color:#6b7480;font-size:12px">' + esc(x.party) + '</span>' : '') + '</td>' +
-          '<td>' + x.qtl.toFixed(2) + '</td>' +
-          '<td style="font-weight:700">' + esc(x.perQuintal == null ? '—' : rs(x.perQuintal)) + '</td>' +
-          '<td>' + esc(x.perBag == null ? '—' : rs(x.perBag)) + '</td></tr>';
+          (anyKg ? '<td>' + (x.kg > 0 ? x.qtl.toFixed(2) : '—') + '</td>' +
+                   '<td style="font-weight:700">' + esc(x.perQuintal == null ? '—' : rs(x.perQuintal)) + '</td>' : '') +
+          '<td style="font-weight:700">' + esc(x.perBag == null ? '—' : rs(x.perBag)) + '</td>' +
+          (anyUnit ? '<td>' + esc(x.perUnit == null ? '—' : rs(x.perUnit)) + '</td>' : '') + '</tr>';
       });
       h += '</tbody></table></div>' +
-        '<div class="kv" style="margin-top:8px">कुल ' + r.qtl.toFixed(2) + ' क्विंटल · ' + r.bags + ' बोरे<br>' +
+        '<div class="kv" style="margin-top:8px">कुल ' + (anyKg ? r.qtl.toFixed(2) + ' क्विंटल · ' : '') +
+        r.bags + ' पैक' + (r.units ? ' · ' + r.units + ' पैकेट' : '') + '<br>' +
         'मूल ' + rs(r.basic) + ' + सप्लायर के ख़र्च ' + rs(r.partyExp + r.lineExp) +
         ' + साझा ख़र्च ' + rs(r.tripExp) + ' = <b>' + rs(r.total) + '</b></div>';
     }
@@ -1624,8 +1739,14 @@
 
   function renderBuyList() {
     const rows = core.buyRates('', '');
-    table($('buyRates'), ['सामान', 'क्विंटल', '₹/क्विं', '₹/बोरा'],
-      rows.map(function (x) { return [x.item, x.qtl.toFixed(2), rs(x.perQuintal), x.perBag == null ? '—' : rs(x.perBag)]; }), null);
+    const anyUnit = rows.some(function (x) { return x.units > 0; });
+    table($('buyRates'), ['सामान', 'क्विंटल', '₹/क्विं', '₹/पैक'].concat(anyUnit ? ['₹/पैकेट'] : []),
+      rows.map(function (x) {
+        const r = [x.item, x.kg > 0 ? x.qtl.toFixed(2) : '—', x.perQuintal == null ? '—' : rs(x.perQuintal),
+                   x.perBag == null ? '—' : rs(x.perBag)];
+        if (anyUnit) r.push(x.perUnit == null ? '—' : rs(x.perUnit));
+        return r;
+      }), null);
 
     const all = core.buys();
     const box = $('buyList');
@@ -1636,9 +1757,13 @@
       h += '<div class="item"><div class="t"><span>' + esc(fmtDate(b.date)) + (b.vehicle ? ' · ' + esc(b.vehicle) : '') +
         '</span><span class="st sent">' + esc(rs(r.total)) + '</span></div>';
       r.lines.forEach(function (x) {
+        const per = [];
+        if (x.perQuintal != null) per.push('<b>' + esc(rs(x.perQuintal)) + '/क्विं</b>');
+        if (x.perBag != null) per.push(esc(rs(x.perBag)) + '/' + esc(x.packName));
+        if (x.perUnit != null) per.push(esc(rs(x.perUnit)) + '/' + esc(x.unitName));
         h += '<div class="s">' + esc(x.item || '—') + (x.party ? ' · ' + esc(x.party) : '') + ' — ' +
-          x.qtl.toFixed(2) + ' क्विं · <b>' + esc(x.perQuintal == null ? '—' : rs(x.perQuintal)) + '/क्विं</b>' +
-          (x.perBag != null ? ' · ' + esc(rs(x.perBag)) + '/बोरा' : '') + '</div>';
+          (x.kg > 0 ? x.qtl.toFixed(2) + ' क्विं · ' : x.bags + ' ' + esc(x.packName) + ' · ') +
+          per.join(' · ') + '</div>';
       });
       h += '<div><button class="btn ghost sm" data-editbuy="' + esc(b.id) + '">✎ खोलो</button>' +
            '<button class="btn danger sm" data-delbuy="' + esc(b.id) + '">🗑 हटाओ</button></div></div>';
@@ -1761,7 +1886,7 @@
     if (!draftLine) return;
     if (!String(draftLine.item || '').trim()) { toast('पहले सामान चुनो।', 'err', 3000); return; }
     const chk = purchaseCalc({ lines: [draftLine], party: draftBuy.party });
-    if (!(chk.kg > 0)) { toast('वज़न भरो — बोरे × kg, या क्विंटल।', 'err', 3500); return; }
+    if (!(chk.kg > 0) && !(chk.bags > 0)) { toast('वज़न भरो, या ' + (String(draftLine.packName || '').trim() || 'बोरे') + ' की गिनती।', 'err', 3500); return; }
     if (draftLineAt < 0) draftBuy.lines.push(draftLine); else draftBuy.lines[draftLineAt] = draftLine;
     closeItemModal();
     renderBuyForm();
