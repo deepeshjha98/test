@@ -10,7 +10,7 @@
 (function (root) {
   'use strict';
 
-  const APP_VERSION = '1.16.0';
+  const APP_VERSION = '1.17.0';
   const K = { api: 'jcm.api', key: 'jcm.key', lists: 'jcm.lists', queue: 'jcm.queue', draft: 'jcm.draft', shift: 'jcm.shift', rates: 'jcm.rates', buys: 'jcm.buys', buyLists: 'jcm.buylists' };
   const DEFAULT_SHIFT = { start: '08:30', finish: '18:30' };   // मिल का सामान्य समय; ⚙ सेटिंग से बदला जा सकता है
   // पैसे की दरें — ⚙ सेटिंग से बदली जा सकती हैं
@@ -899,19 +899,38 @@
             const nm = r.item || '(बिना नाम)';
             const k = nm + '\u0000' + packKg + '\u0000' + r.unitsPer;
             const e = byItem[k] || (byItem[k] = { item: nm, packKg: packKg, unitsPer: r.unitsPer,
-                                                 kg: 0, bags: 0, units: 0, total: 0, lines: 0, parties: {} });
+                                                 kg: 0, bags: 0, units: 0, total: 0, lines: 0,
+                                                 parties: {}, history: [] });
             e.kg += r.kg; e.bags += r.bags; e.units += r.units; e.total += r.total; e.lines++;
             if (r.party) e.parties[r.party] = true;
+            /* हर खरीद अपने-आप में एक रिकॉर्ड — औसत में घुलकर ग़ायब न हो जाए।
+               नया माल नए भाव पर आए तो वह भाव अलग से दिखना चाहिए।           */
+            e.history.push({ date: b.date, savedAt: b.savedAt || '', vehicle: b.vehicle || '', party: r.party,
+                             kg: r.kg, qtl: r.kg / 100, bags: r.bags, units: r.units, total: r.total,
+                             perQuintal: r.perQuintal, perBag: r.perBag, perUnit: r.perUnit });
           });
         });
         return Object.keys(byItem).map(function (k) {
           const e = byItem[k];
+          // नई खरीद पहले — तारीख़ बराबर हो तो जो बाद में दर्ज हुई वह ऊपर
+          e.history.sort(function (a, b2) {
+            return String(b2.date).localeCompare(String(a.date)) ||
+                   String(b2.savedAt).localeCompare(String(a.savedAt));
+          });
+          const last = e.history[0] || null;
           return { item: e.item, packKg: e.packKg, unitsPer: e.unitsPer,
                    lines: e.lines, kg: e.kg, qtl: e.kg / 100, bags: e.bags, units: e.units,
                    total: e.total, packName: PACK, unitName: UNIT,
-                   perQuintal: e.kg > 0 ? e.total / (e.kg / 100) : null,
-                   perBag: e.bags > 0 ? e.total / e.bags : null,
-                   perUnit: e.units > 0 ? e.total / e.units : null,
+                   /* दिखाने वाला भाव = सबसे ताज़ा खरीद का, औसत का नहीं।
+                      औसत भी साथ रहता है (avg*) पर वह मुख्य आँकड़ा नहीं।     */
+                   perQuintal: last ? last.perQuintal : null,
+                   perBag: last ? last.perBag : null,
+                   perUnit: last ? last.perUnit : null,
+                   lastDate: last ? last.date : '',
+                   avgPerQuintal: e.kg > 0 ? e.total / (e.kg / 100) : null,
+                   avgPerBag: e.bags > 0 ? e.total / e.bags : null,
+                   avgPerUnit: e.units > 0 ? e.total / e.units : null,
+                   history: e.history,
                    parties: Object.keys(e.parties).sort() };
         }).sort(function (a, b2) { return b2.total - a.total; });
       },
@@ -1887,20 +1906,68 @@
   }
   function hhKg(kg) { return String(Math.round(kg * 1000) / 1000); }
 
+  let rateRows = [];
+
+  function openHist(i) {
+    const x = rateRows[i];
+    if (!x) return;
+    $('hTitle').textContent = x.item + ' · ' + packLabel(x.packKg, x.unitsPer);
+    const uni = x.units > 0;
+    let h = '<div class="kv">ताज़ा भाव <b>' +
+      (x.perQuintal != null ? rs(x.perQuintal) + '/क्विं' : rs(x.perBag) + '/' + PACK) + '</b>' +
+      (x.lastDate ? ' · ' + esc(fmtDate(x.lastDate)) : '') + '<br>' +
+      '<span style="color:#6b7480">सब ' + x.lines + ' खरीद मिलाकर औसत ' +
+      (x.avgPerQuintal != null ? rs(x.avgPerQuintal) + '/क्विं' : rs(x.avgPerBag) + '/' + PACK) + '</span></div>' +
+      '<label>हर खरीद अलग-अलग — नई ऊपर</label><div class="scroll"><table class="rep"><thead><tr>' +
+      '<th>तारीख़</th><th>मात्रा</th><th>₹/क्विं</th><th>₹/' + esc(PACK) + '</th>' +
+      (uni ? '<th>₹/' + esc(UNIT) + '</th>' : '') + '</tr></thead><tbody>';
+    x.history.forEach(function (r) {
+      h += '<tr><td>' + esc(fmtDate(r.date)) +
+        (r.party ? '<span class="pack">' + esc(r.party) + '</span>' : '') + '</td>' +
+        '<td>' + esc(r.kg > 0 ? r.qtl.toFixed(2) + ' क्विं' : r.bags + ' ' + PACK) + '</td>' +
+        (r.perQuintal == null ? '<td>—</td>' : '<td class="ot">' + esc(rs(r.perQuintal)) + '</td>') +
+        '<td>' + esc(r.perBag == null ? '—' : rs(r.perBag)) + '</td>' +
+        (uni ? '<td>' + esc(r.perUnit == null ? '—' : rs(r.perUnit)) + '</td>' : '') + '</tr>';
+    });
+    $('hBody').innerHTML = h + '</tbody></table></div>';
+    $('histModal').hidden = false;
+  }
+  function closeHist() { $('histModal').hidden = true; }
+  $('hClose').onclick = closeHist;
+  $('hOk').onclick = closeHist;
+  $('buyRates').addEventListener('click', function (ev) {
+    const t = ev.target.closest ? ev.target.closest('[data-hist]') : null;
+    if (t) openHist(parseInt(t.getAttribute('data-hist'), 10));
+  });
+
   function renderBuyList() {
-    const rows = core.buyRates('', '');
-    const anyUnit = rows.some(function (x) { return x.units > 0; });
     /* क्विंटल का कॉलम (कुल कितना आया) हटा दिया — रोज़ के काम में उसकी ज़रूरत नहीं।
        उसकी जगह पैक की नाप, जिससे यह भी साफ़ हो जाता है कि दो पंक्तियों वाला
-       एक ही सामान असल में दो अलग नाप का है।                                  */
-    table($('buyRates'), ['सामान', PACK, '₹/क्विं', '₹/' + PACK].concat(anyUnit ? ['₹/' + UNIT] : []),
-      rows.map(function (x) {
-        const r = [x.item, packLabel(x.packKg, x.unitsPer),
-                   x.perQuintal == null ? '—' : rs(x.perQuintal),
-                   x.perBag == null ? '—' : rs(x.perBag)];
-        if (anyUnit) r.push(x.perUnit == null ? '—' : rs(x.perUnit));
-        return r;
-      }), null);
+       एक ही सामान असल में दो अलग नाप का है।
+
+       भाव अब सबसे ताज़ा खरीद का दिखता है, औसत का नहीं — वरना नया माल नए भाव
+       पर आने पर वह पुराने में घुलकर छिप जाता। नाम के नीचे पिछले दो भाव भी,
+       और पंक्ति दबाने पर पूरा इतिहास।                                        */
+    rateRows = core.buyRates('', '');
+    const anyUnit = rateRows.some(function (x) { return x.units > 0; });
+    let rh = '<thead><tr><th>सामान</th><th>' + esc(PACK) + '</th><th>₹/क्विं</th><th>₹/' + esc(PACK) + '</th>' +
+      (anyUnit ? '<th>₹/' + esc(UNIT) + '</th>' : '') + '</tr></thead><tbody>';
+    if (!rateRows.length) rh += '<tr><td colspan="' + (anyUnit ? 5 : 4) + '" style="text-align:center;color:#6b7480">कुछ नहीं</td></tr>';
+    rateRows.forEach(function (x, i) {
+      // पिछले दो भाव — वही जो ताज़ा से पहले आए थे
+      const prev = x.history.slice(1, 3).map(function (h) {
+        const v = h.perQuintal != null ? h.perQuintal : h.perBag;
+        return v == null ? '' : rs(v);
+      }).filter(Boolean);
+      rh += '<tr class="tap" data-hist="' + i + '">' +
+        '<td>' + esc(x.item) +
+          (prev.length ? '<span class="prev">पिछले ' + esc(prev.join(' · ')) + '</span>' : '') + '</td>' +
+        '<td>' + esc(packLabel(x.packKg, x.unitsPer)) + '</td>' +
+        (x.perQuintal == null ? '<td>—</td>' : '<td class="ot">' + esc(rs(x.perQuintal)) + '</td>') +
+        '<td>' + esc(x.perBag == null ? '—' : rs(x.perBag)) + '</td>' +
+        (anyUnit ? '<td>' + esc(x.perUnit == null ? '—' : rs(x.perUnit)) + '</td>' : '') + '</tr>';
+    });
+    $('buyRates').innerHTML = rh + '</tbody>';
 
     const all = core.buys();
     const box = $('buyList');

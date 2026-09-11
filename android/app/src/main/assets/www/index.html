@@ -155,6 +155,9 @@
     .rep th { font-size: 12px; color: var(--muted); font-weight: 600; }
     .rep th:first-child, .rep td:first-child { text-align: left; white-space: normal; word-break: break-word; }
     .rep td.ot { color: var(--amber); font-weight: 600; }
+    .rep tr.tap td:first-child { color: var(--blue); }
+    .rep .prev { display: block; font-size: 11px; color: var(--muted); font-weight: 400; margin-top: 2px; }
+    .rep .pack { display: block; font-size: 11px; color: var(--muted); font-weight: 400; }
     .rep tr:last-child td { border-bottom: 0; }
     .scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
     .chips2 { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
@@ -458,6 +461,14 @@
   <button data-view="settings"><span class="ic">⚙</span>सेटिंग</button>
 </nav>
 <div id="toast"></div>
+
+<div id="histModal" class="modal" hidden>
+  <div class="sheet">
+    <div class="mhead"><b id="hTitle">भाव का इतिहास</b><button class="xbtn" id="hClose">✕</button></div>
+    <div class="mbody" id="hBody"></div>
+    <div class="mfoot"><button class="btn ghost" id="hOk">बंद करो</button></div>
+  </div>
+</div>
 
 <div id="itemModal" class="modal" hidden>
   <div class="sheet">
