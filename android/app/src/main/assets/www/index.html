@@ -227,10 +227,13 @@
 
   <!-- ================= सूची / sync ================= -->
   <section id="view-list" hidden>
-    <div class="summary">
+    <div class="summary" id="countsBox">
       <div><b id="nPending">0</b><span id="lblPending">बाकी (pending)</span></div>
       <div><b id="nFailed">0</b><span>अटकी (failed)</span></div>
       <div><b id="nSent">0</b><span>Sheet में गईं</span></div>
+    </div>
+    <div class="summary" id="soloBox" hidden>
+      <div><b id="nAll">0</b><span>दर्ज entry — सब फ़ोन में सुरक्षित</span></div>
     </div>
     <button class="btn blue" id="syncBtn" style="margin-top:0">☁ अभी sync करो</button>
     <div class="card" style="margin-top:12px" id="items"></div>
@@ -362,6 +365,8 @@
       <button class="btn blue" id="saveSettings">सेटिंग save करो</button>
       <button class="btn ghost" id="testBtn">🔌 Test करो (लिस्ट लाओ)</button>
       <div class="hint" id="testOut"></div>
+      <button class="btn danger" id="offSheet" style="margin-top:10px">Google Sheet बंद करो — सब फ़ोन में रखो</button>
+      <div class="hint" id="sheetState"></div>
     </div>
     <div class="card">
       <label style="margin-top:0">मिल का काम का समय (शिफ्ट)</label>

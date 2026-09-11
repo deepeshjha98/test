@@ -10,7 +10,7 @@
 (function (root) {
   'use strict';
 
-  const APP_VERSION = '1.17.0';
+  const APP_VERSION = '1.18.0';
   const K = { api: 'jcm.api', key: 'jcm.key', lists: 'jcm.lists', queue: 'jcm.queue', draft: 'jcm.draft', shift: 'jcm.shift', rates: 'jcm.rates', buys: 'jcm.buys', buyLists: 'jcm.buylists' };
   const DEFAULT_SHIFT = { start: '08:30', finish: '18:30' };   // मिल का सामान्य समय; ⚙ सेटिंग से बदला जा सकता है
   // पैसे की दरें — ⚙ सेटिंग से बदली जा सकती हैं
@@ -433,7 +433,11 @@
     const set = function (k, v) { storage.setItem(k, JSON.stringify(v)); };
     let syncing = false;
 
+    /* भेजी हुई entries की एक हद तक ही नक़ल रखी जाती है — पर यह तभी सुरक्षित है
+       जब Sheet में असली रिकॉर्ड मौजूद हो। सिर्फ़-फ़ोन वाले मोड में फ़ोन ही इकलौता
+       रिकॉर्ड है, इसलिए वहाँ कुछ भी अपने-आप नहीं मिटता।                        */
     function prune(q) {
+      if (core.localOnly()) return;
       let sent = 0;
       for (let i = 0; i < q.length; i++) {
         if (q[i].status !== 'sent') continue;
@@ -448,6 +452,13 @@
       setApi: function (u) { set(K.api, String(u || '').trim()); },
       getKey: function () { return get(K.key, ''); },
       setKey: function (k) { set(K.key, String(k || '').trim()); },
+      /* Google Sheet बंद — URL और key हटते ही app सिर्फ़ फ़ोन पर चलती है।
+         entries कहीं नहीं जातीं, पर जो पहले जा चुकी हैं वे Sheet में पड़ी रहती हैं
+         (यहाँ से कुछ मिटाया नहीं जाता)। दुबारा URL डालते ही सब लौट आता है।     */
+      disableSheet: function () {
+        set(K.api, ''); set(K.key, '');
+        return true;
+      },
       lists: function () { return get(K.lists, null); },
       queue: function () { return get(K.queue, []); },
       pending: function () { return core.queue().filter(function (i) { return i.status === 'pending'; }); },
@@ -550,9 +561,13 @@
         if (!it || it.status !== 'failed') return false;
         it.status = 'pending'; it.error = ''; set(K.queue, q); return true;
       },
+      /* पहले "भेजी हुई" entry फ़ोन से हटती ही नहीं थी (सोच यह थी कि Sheet ही सच है)।
+         नतीजा — गलती सुधारने का कोई रास्ता नहीं बचता था, और Sheet बंद करने पर तो
+         वह entry हमेशा के लिए जमकर बैठ जाती। अब हर entry हटाई जा सकती है; Sheet
+         की row वहीं रहती है और UI उसी की चेतावनी देता है।                       */
       remove: function (id) {
         const q = core.queue(); const i = q.findIndex(function (x) { return x.id === id; });
-        if (i < 0 || q[i].status === 'sent') return false;   // sent rows phone से नहीं हटतीं (Sheet ही सच है)
+        if (i < 0) return false;
         q.splice(i, 1); set(K.queue, q); return true;
       },
       clearSent: function () { set(K.queue, core.queue().filter(function (i) { return i.status !== 'sent'; })); },
@@ -1120,9 +1135,13 @@
     const nS = q.length - nP - nF;
     const solo = core.localOnly();
     $('syncBtn').hidden = solo;
-    $('lblPending').textContent = solo ? 'फ़ोन में सुरक्षित' : 'बाकी (pending)';
+    // सिर्फ़-फ़ोन मोड में "बाकी/अटकी/Sheet में गईं" का कोई मतलब नहीं — बस कुल गिनती
+    $('countsBox').hidden = solo;
+    $('soloBox').hidden = !solo;
+    if (solo) $('nAll').textContent = q.length;
+    $('lblPending').textContent = 'बाकी (pending)';
     $('nPending').textContent = nP; $('nFailed').textContent = nF; $('nSent').textContent = nS;
-    $('badge').textContent = (nP + nF) ? String(nP + nF) : '';
+    $('badge').textContent = solo ? '' : ((nP + nF) ? String(nP + nF) : '');
     const box = $('items'); box.innerHTML = '';
     if (!q.length) { box.innerHTML = '<div class="empty">अभी कोई entry नहीं।</div>'; return; }
 
@@ -1139,8 +1158,11 @@
 
     order.forEach(function (it) {
       const e = it.entry; const d = document.createElement('div'); d.className = 'buy';
-      const st = it.status === 'pending' ? (solo ? 'फ़ोन में' : 'बाकी')
-               : it.status === 'sent' ? ('Sheet row ' + (it.result && it.result.serial != null ? it.result.serial : '?')) : 'अटकी';
+      // सिर्फ़-फ़ोन मोड में Sheet का कोई ज़िक्र नहीं — वह अब मतलब ही नहीं रखता
+      const st = solo ? 'फ़ोन में'
+               : it.status === 'pending' ? 'बाकी'
+               : it.status === 'sent' ? ('Sheet row ' + (it.result && it.result.serial != null ? it.result.serial : '?'))
+               : 'अटकी';
       const sp = core.split(e.start, e.finish);
       const bs = bagSplit(e), tot = bs.small + bs.big;
       const I = core.incentive(e.start, e.finish, e, e.labour.length);
@@ -1172,20 +1194,35 @@
           : '<div class="s">' + esc(names) + '</div>') +
         (it.error ? '<div class="e">' + esc(it.error) + '</div>' : '');
 
-      if (it.status !== 'sent') {
-        const wrap = document.createElement('div');
-        if (it.status === 'failed') {
-          const b = document.createElement('button'); b.className = 'btn blue sm'; b.textContent = '↻ फिर भेजो';
-          b.onclick = function () { core.retry(it.id); renderList(); doSync(true); }; wrap.appendChild(b);
-        }
-        const ed = document.createElement('button'); ed.className = 'btn ghost sm'; ed.textContent = '✎ Edit';
-        ed.onclick = function () { if (!confirm('यह entry form में लौटेगी और सूची से हटेगी। ठीक?')) return; core.remove(it.id); loadEntry(e); showView('entry'); renderList(); };
-        wrap.appendChild(ed);
-        const rm = document.createElement('button'); rm.className = 'btn danger sm'; rm.textContent = '🗑 हटाओ';
-        rm.onclick = function () { if (!confirm('पक्का हटाना है? यह Sheet में नहीं गई है।')) return; core.remove(it.id); renderList(); };
-        wrap.appendChild(rm);
-        d.appendChild(wrap);
+      /* Edit और हटाओ हर entry पर — पहले "Sheet में जा चुकी" entries पर ये छिपे थे,
+         जिससे गलती सुधारने का कोई रास्ता ही नहीं बचता था। जो सचमुच Sheet में जा
+         चुकी है उस पर चेतावनी दी जाती है कि वहाँ की row अपने-आप नहीं बदलेगी।   */
+      const wrap = document.createElement('div');
+      if (it.status === 'failed') {
+        const b = document.createElement('button'); b.className = 'btn blue sm'; b.textContent = '↻ फिर भेजो';
+        b.onclick = function () { core.retry(it.id); renderList(); doSync(true); }; wrap.appendChild(b);
       }
+      const inSheet = it.status === 'sent' && !core.localOnly();
+      const rowNo = it.result && it.result.serial != null ? it.result.serial : '?';
+      const ed = document.createElement('button'); ed.className = 'btn ghost sm'; ed.textContent = '✎ Edit';
+      ed.onclick = function () {
+        const warn = inSheet
+          ? 'यह entry form में लौटेगी। Sheet की row ' + rowNo + ' अपने-आप नहीं बदलेगी — उसे वहाँ ख़ुद ठीक करना होगा। ठीक?'
+          : 'यह entry form में लौटेगी और सूची से हटेगी। ठीक?';
+        if (!confirm(warn)) return;
+        core.remove(it.id); loadEntry(e); showView('entry'); renderList();
+      };
+      wrap.appendChild(ed);
+      const rm = document.createElement('button'); rm.className = 'btn danger sm'; rm.textContent = '🗑 हटाओ';
+      rm.onclick = function () {
+        const warn = inSheet
+          ? 'फ़ोन से हट जाएगी। Sheet की row ' + rowNo + ' वहीं रहेगी — उसे ख़ुद हटाना होगा। पक्का?'
+          : 'पक्का हटाना है?';
+        if (!confirm(warn)) return;
+        core.remove(it.id); renderList();
+      };
+      wrap.appendChild(rm);
+      d.appendChild(wrap);
       box.appendChild(d);
     });
   }
@@ -1221,7 +1258,7 @@
     if (v === 'buy') { if (!draftBuy) { showBuyForm(false); renderBuyList(); } }
     if (v === 'settings') {
       $('api').value = core.getApi(); $('key').value = core.getKey();
-      shiftInfo(); ratesInfo(); fillLocalLists(); listsInfo(); dbInfo();
+      shiftInfo(); ratesInfo(); fillLocalLists(); listsInfo(); dbInfo(); sheetState();
       const bl = core.buyLists();
       draftItems = bl.items.map(itemToDraft);
       renderItemList();
@@ -2081,8 +2118,26 @@
     try { await core.refreshLists(); renderLists(); listsInfo(); toast('लिस्ट refresh हो गई', 'ok'); }
     catch (e) { toast(e.message, 'err', 4000); }
   };
+  function sheetState() {
+    const on = !core.localOnly();
+    $('offSheet').hidden = !on;
+    $('sheetState').textContent = on
+      ? 'अभी entries Google Sheet में भी जाती हैं।'
+      : 'अभी सब कुछ सिर्फ़ फ़ोन में है — कहीं नहीं जाता, कुछ अपने-आप मिटता भी नहीं। ' +
+        'दुबारा चालू करना हो तो ऊपर Web App URL डालकर save कर दो।';
+  }
   $('saveSettings').onclick = function () {
-    core.setApi($('api').value); core.setKey($('key').value); toast('सेटिंग save हो गई', 'ok');
+    core.setApi($('api').value); core.setKey($('key').value);
+    sheetState(); modeHints(); renderList(); toast('सेटिंग save हो गई', 'ok');
+  };
+  $('offSheet').onclick = function () {
+    if (!confirm('Google Sheet बंद कर दें?\n\nआगे से हर entry सिर्फ़ फ़ोन में रहेगी। ' +
+                 'Sheet में जो पहले जा चुकी हैं वे वहीं पड़ी रहेंगी — यहाँ से कुछ नहीं मिटेगा।\n\n' +
+                 'जब चाहो, URL दुबारा डालकर चालू कर सकते हो।')) return;
+    core.disableSheet();
+    $('api').value = ''; $('key').value = '';
+    sheetState(); modeHints(); renderList(); renderLists();
+    toast('✔ Sheet बंद — अब सब कुछ फ़ोन में', 'ok', 4000);
   };
   $('testBtn').onclick = async function () {
     core.setApi($('api').value); core.setKey($('key').value);
