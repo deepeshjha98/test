@@ -70,6 +70,12 @@
     .buy summary::-webkit-details-marker { display: none; }
     .buy summary::before { content: '▸ '; }
     .buy details[open] summary::before { content: '▾ '; }
+    /* entry कार्ड की एक-नज़र पंक्ति */
+    .facts { display: flex; gap: 8px; margin: 8px 0; }
+    .facts > div { flex: 1; min-width: 0; background: #f6f8fa; border-radius: 9px; padding: 7px 9px; }
+    .facts span { display: block; font-size: 11px; color: var(--muted); }
+    .facts em { display: block; font-style: normal; font-weight: 700; font-size: 15px; white-space: nowrap; }
+    .facts i { display: block; font-style: normal; font-weight: 600; font-size: 11px; color: var(--muted); white-space: nowrap; }
     .st { font-size: 13px; font-weight: 700; padding: 2px 8px; border-radius: 10px; white-space: nowrap; }
     .st.pending { background: #fff3e0; color: var(--amber); }
     .st.sent { background: #e8f5e9; color: var(--green); }
@@ -198,8 +204,12 @@
       <div class="hint" id="dur"></div>
       <div class="hint" id="inc" style="font-weight:600;color:#1f4e78"></div>
 
-      <label>कुल बोरा</label>
-      <input type="number" id="bags" inputmode="numeric" pattern="[0-9]*" min="0" step="1" placeholder="जैसे 180">
+      <label>बोरे — नाप के हिसाब से</label>
+      <div class="row2">
+        <div><input type="number" id="bagsSmall" inputmode="numeric" pattern="[0-9]*" min="0" step="1" placeholder="छोटे"></div>
+        <div><input type="number" id="bagsBig" inputmode="numeric" pattern="[0-9]*" min="0" step="1" placeholder="बड़े"></div>
+      </div>
+      <div class="hint" id="bagsInfo">छोटे और बड़े बोरे की दर अलग है — ⚙ में दोनों भरी जाती हैं।</div>
     </div>
 
     <div class="card">
@@ -364,9 +374,11 @@
     <div class="card">
       <label style="margin-top:0">पैसे की दरें</label>
       <div class="hint" style="margin-top:0">विश्लेषण इन्हीं से लागत और कमाई गिनता है।</div>
+      <label>दिहाड़ी ₹ / मज़दूर-घंटा</label>
+      <input type="number" id="rWage" inputmode="decimal" min="0" step="1" placeholder="50">
       <div class="row2">
-        <div><label>दिहाड़ी ₹ / मज़दूर-घंटा</label><input type="number" id="rWage" inputmode="decimal" min="0" step="1" placeholder="50"></div>
-        <div><label>₹ / बोरा</label><input type="number" id="rBag" inputmode="decimal" min="0" step="0.5" placeholder="3"></div>
+        <div><label>₹ / छोटा बोरा</label><input type="number" id="rSmall" inputmode="decimal" min="0" step="0.5" placeholder="3"></div>
+        <div><label>₹ / बड़ा बोरा</label><input type="number" id="rBig" inputmode="decimal" min="0" step="0.5" placeholder="4"></div>
       </div>
       <div class="hint">दिहाड़ी सिर्फ़ काम के घंटों वाले हिस्से पर लगती है — ओवरटाइम में नहीं। बोरा-दर दोनों में।</div>
       <button class="btn blue" id="saveRates">दरें save करो</button>

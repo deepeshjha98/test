@@ -10,11 +10,25 @@
 (function (root) {
   'use strict';
 
-  const APP_VERSION = '1.15.0';
+  const APP_VERSION = '1.16.0';
   const K = { api: 'jcm.api', key: 'jcm.key', lists: 'jcm.lists', queue: 'jcm.queue', draft: 'jcm.draft', shift: 'jcm.shift', rates: 'jcm.rates', buys: 'jcm.buys', buyLists: 'jcm.buylists' };
   const DEFAULT_SHIFT = { start: '08:30', finish: '18:30' };   // मिल का सामान्य समय; ⚙ सेटिंग से बदला जा सकता है
   // पैसे की दरें — ⚙ सेटिंग से बदली जा सकती हैं
-  const DEFAULT_RATES = { wage: 50, perBag: 3 };   // ₹/मज़दूर-घंटा (दिहाड़ी) और ₹/बोरा (लोडिंग का हिस्सा)
+  const DEFAULT_RATES = { wage: 50, perSmall: 3, perBig: 3, perBag: 3 };   // ₹/मज़दूर-घंटा, और छोटे/बड़े बोरे की अपनी-अपनी दर
+
+  /* लोडिंग-अनलोडिंग में दो नाप के बोरे होते हैं — छोटा और बड़ा — और दोनों का
+     चार्ज अलग। पुरानी entries में सिर्फ़ एक ही गिनती लिखी जाती थी; उन्हें बड़ा
+     माना जाता है, और बड़े की दर पुरानी ₹/बोरा से ही शुरू होती है, इसलिए
+     upgrade से किसी पुराने हिसाब की रक़म नहीं बदलती।                        */
+  function bagSplit(e) {
+    const s = Number(e && e.bagsSmall), b = Number(e && e.bagsBig);
+    if (isFinite(s) || isFinite(b)) {
+      return { small: Math.max(0, isFinite(s) ? s : 0), big: Math.max(0, isFinite(b) ? b : 0) };
+    }
+    return { small: 0, big: Math.max(0, Number(e && e.bags) || 0) };
+  }
+  function bagTotal(e) { const x = bagSplit(e); return x.small + x.big; }
+  function bagPay(x, rates) { return x.small * rates.perSmall + x.big * rates.perBig; }
   const MAX_SENT_HISTORY = 300;
   const REQUEST_TIMEOUT_MS = 25000;
 
@@ -393,7 +407,14 @@
     if (!e.goods) return 'सामान का प्रकार चुनो।';
     const T = /^\d{2}:\d{2}$/;
     if (!T.test(e.start || '') || !T.test(e.finish || '')) return 'स्टार्ट और फिनिश टाइम दोनों भरो।';
-    if (!/^\d+$/.test(String(e.bags === undefined || e.bags === null ? '' : e.bags))) return 'कुल बोरा पूरा अंक में भरो।';
+    const whole = function (v) { return v === '' || v === undefined || v === null || /^\d+$/.test(String(v)); };
+    if (e.bagsSmall !== undefined || e.bagsBig !== undefined) {
+      if (!whole(e.bagsSmall)) return 'छोटे बोरे की गिनती पूरा अंक में भरो।';
+      if (!whole(e.bagsBig)) return 'बड़े बोरे की गिनती पूरा अंक में भरो।';
+      if (bagTotal(e) <= 0) return 'छोटे या बड़े, कोई एक गिनती भरो।';
+    } else if (!/^\d+$/.test(String(e.bags === undefined || e.bags === null ? '' : e.bags))) {
+      return 'कुल बोरा पूरा अंक में भरो।';
+    }
     if (!Array.isArray(e.labour) || !e.labour.length) return 'कम से कम एक लेबर चुनो।';
     if (lists) {
       if (lists.types.indexOf(e.type) < 0) return 'कार्य प्रकार list में नहीं है — लिस्ट refresh करो।';
@@ -480,7 +501,9 @@
         if (err) throw new Error(err);
         const clean = {
           date: entry.date, type: entry.type, goods: entry.goods, start: entry.start, finish: entry.finish,
-          bags: String(entry.bags), labour: entry.labour.slice()
+          bagsSmall: bagSplit(entry).small, bagsBig: bagSplit(entry).big,
+          bags: String(bagTotal(entry)),     // कुल — Sheet, CSV और रिपोर्ट इसी को पढ़ते हैं
+          labour: entry.labour.slice()
         };
         const q = core.queue();
         const item = { id: uuid(), entry: clean, status: 'pending', createdAt: now().toISOString(), attempts: 0, error: '', result: null };
@@ -560,10 +583,12 @@
         const rates = core.getRates();
         const sp = splitShift(start, finish, core.getShift());
         const n = Math.max(0, Number(labourCount) || 0);
-        const b = Math.max(0, Number(bags) || 0);
-        const total = rates.perBag * b;
+        // bags सीधा अंक हो (पुराना तरीक़ा — बड़ा माना जाता है), {small,big} हो, या पूरी entry — तीनों चलते हैं
+        const x = (bags && typeof bags === 'object') ? bagSplit(bags) : { small: 0, big: Math.max(0, Number(bags) || 0) };
+        const total = bagPay(x, rates);
         const wage = rates.wage * (sp.work * n) / 60;
-        return { total: total, perLabour: n ? total / n : 0, wage: wage, net: total - wage, split: sp };
+        return { total: total, perLabour: n ? total / n : 0, wage: wage, net: total - wage,
+                 bags: x, bagCount: x.small + x.big, split: sp };
       },
 
       /* तारीख़ की सीमा में पूरी रिपोर्ट।
@@ -597,14 +622,14 @@
           const e = it.entry;
           const sp = splitShift(e.start, e.finish, shift);
           const n = (e.labour || []).length;
-          r.bags += Number(e.bags) || 0;
+          r.bags += bagTotal(e);
           r.totalMin += sp.total; r.workMin += sp.work; r.otMin += sp.ot;
           r.manMin += sp.total * n; r.manWorkMin += sp.work * n; r.manOtMin += sp.ot * n;
 
           (e.labour || []).forEach(function (nm) { bucket(byName, nm, sp, 1); });   // हर लेबर को पूरा समय
-          bucket(byDay, e.date, sp, 1).bags += Number(e.bags) || 0;
-          bucket(byType, e.type, sp, 1).bags += Number(e.bags) || 0;
-          bucket(byGoods, e.goods, sp, 1).bags += Number(e.bags) || 0;
+          bucket(byDay, e.date, sp, 1).bags += bagTotal(e);
+          bucket(byType, e.type, sp, 1).bags += bagTotal(e);
+          bucket(byGoods, e.goods, sp, 1).bags += bagTotal(e);
         });
 
         const byOt = function (a, b) { return (b.otMin - a.otMin) || (b.totalMin - a.totalMin) || a.name.localeCompare(b.name); };
@@ -633,7 +658,7 @@
           if (!d) return false;
           if (from && d < from) return false;
           if (to && d > to) return false;
-          return (Number(it.entry.bags) || 0) > 0 && (it.entry.labour || []).length > 0;
+          return bagTotal(it.entry) > 0 && (it.entry.labour || []).length > 0;
         });
 
         const blank = function () { return { entries: 0, bags: 0, min: 0, labourMin: 0, perBag: null, bagsPerLabourHour: null }; };
@@ -645,7 +670,7 @@
           const e = it.entry;
           const sp = splitShift(e.start, e.finish, shift);
           if (!sp.total) return;
-          const n = e.labour.length, bags = Number(e.bags) || 0;
+          const n = e.labour.length, bags = bagTotal(e);     // रफ़्तार में छोटा+बड़ा जोड़कर
           const b = sp.ot === 0 ? B.work : sp.work === 0 ? B.ot : B.mixed;
           b.entries++; b.bags += bags; b.min += sp.total; b.labourMin += sp.total * n;
 
@@ -689,13 +714,23 @@
 
       getRates: function () {
         const v = get(K.rates, null);
-        return (v && isFinite(v.wage) && isFinite(v.perBag) && v.wage >= 0 && v.perBag >= 0) ? v : DEFAULT_RATES;
+        if (!v || !isFinite(v.wage) || v.wage < 0) return DEFAULT_RATES;
+        /* पुरानी सेटिंग में एक ही ₹/बोरा था — दोनों नापों की दर वहीं से शुरू होती है,
+           इसलिए upgrade के बाद हिसाब ज्यों का त्यों रहता है।                      */
+        const s = isFinite(v.perSmall) ? v.perSmall : v.perBag;
+        const b = isFinite(v.perBig) ? v.perBig : v.perBag;
+        if (!isFinite(s) || !isFinite(b) || s < 0 || b < 0) return DEFAULT_RATES;
+        return { wage: v.wage, perSmall: s, perBig: b, perBag: b };
       },
-      setRates: function (wage, perBag) {
-        const w = Number(wage), b = Number(perBag);
+      /* तीसरी दलील न दो तो दोनों नापों की दर एक ही मानी जाती है — यही पुराना
+         तरीक़ा था, और जिन मिलों में फ़र्क़ नहीं है उनके लिए अब भी ठीक है।     */
+      setRates: function (wage, perSmall, perBig) {
+        if (perBig === undefined || perBig === null || perBig === '') perBig = perSmall;
+        const w = Number(wage), s = Number(perSmall), b = Number(perBig);
         if (!isFinite(w) || w < 0) throw new Error('दिहाड़ी की दर अंक में भरो (₹ प्रति मज़दूर-घंटा)।');
-        if (!isFinite(b) || b < 0) throw new Error('बोरा दर अंक में भरो (₹ प्रति बोरा)।');
-        const v = { wage: w, perBag: b };
+        if (!isFinite(s) || s < 0) throw new Error('छोटे बोरे की दर अंक में भरो।');
+        if (!isFinite(b) || b < 0) throw new Error('बड़े बोरे की दर अंक में भरो।');
+        const v = { wage: w, perSmall: s, perBig: b, perBag: b };
         set(K.rates, v);
         return v;
       },
@@ -720,7 +755,7 @@
           if (!d) return false;
           if (from && d < from) return false;
           if (to && d > to) return false;
-          return (Number(it.entry.bags) || 0) > 0 && (it.entry.labour || []).length > 0;
+          return bagTotal(it.entry) > 0 && (it.entry.labour || []).length > 0;
         });
 
         const blank = function () {
@@ -734,10 +769,10 @@
           const e = it.entry;
           const sp = splitShift(e.start, e.finish, shift);
           if (!sp.total) return;
-          const n = e.labour.length, bags = Number(e.bags) || 0;
+          const n = e.labour.length, x = bagSplit(e), bags = x.small + x.big;
           const wLM = sp.work * n, oLM = sp.ot * n;
           const wage = rates.wage * wLM / 60;     // दिहाड़ी सिर्फ़ काम के घंटों वाले हिस्से पर
-          const piece = rates.perBag * bags;
+          const piece = bagPay(x, rates);         // छोटे और बड़े की अपनी-अपनी दर
           const key = sp.ot === 0 ? 'work' : sp.work === 0 ? 'ot' : 'mixed';
           [B[key], B.all].forEach(function (b) {
             b.entries++; b.bags += bags; b.labourMin += sp.total * n;
@@ -902,7 +937,7 @@
       toCSV: function () {
         const sh = core.getShift();
         const head = ['क्रम', 'दिनांक', 'कार्य प्रकार', 'सामान', 'स्टार्ट', 'फिनिश', 'कुल समय',
-                      'काम के घंटे', 'ओवरटाइम', 'कुल बोरा',
+                      'काम के घंटे', 'ओवरटाइम', 'छोटा बोरा', 'बड़ा बोरा', 'कुल बोरा',
                       'लेबर संख्या', 'लेबर', 'लेबर-घंटे (काम)', 'लेबर-घंटे (OT)',
                       'स्थिति', 'बनाई गई', 'Sheet row'];
         const rows = core.queue().slice().reverse().map(function (it, i) {
@@ -910,7 +945,7 @@
           const sp = splitShift(e.start, e.finish, sh);
           const n = e.labour.length;
           return [i + 1, e.date, e.type, e.goods, e.start, e.finish, hhmm(sp.total),
-                  hhmm(sp.work), hhmm(sp.ot), e.bags,
+                  hhmm(sp.work), hhmm(sp.ot), bagSplit(e).small, bagSplit(e).big, bagTotal(e),
                   n, e.labour.join(', '), hhmm(sp.work * n), hhmm(sp.ot * n),
                   statusText(it), it.createdAt,
                   (it.result && it.result.serial != null) ? it.result.serial : ''];
@@ -955,7 +990,7 @@
     return core;
   }
 
-  const api = { createCore: createCore, validate: validate, uuid: uuid, todayLocal: todayLocal, durationText: durationText, fmtDate: fmtDate, cleanNames: cleanNames, pickUpdate: pickUpdate, normalizeBuyParty: normalizeBuyParty, RATE_BYS: RATE_BYS, ITEM_KINDS: ITEM_KINDS, itemKind: itemKind, ratesForKind: ratesForKind, PACK: PACK, UNIT: UNIT, buyItem: buyItem, cleanBuyItems: cleanBuyItems, findBuyItem: findBuyItem, lineWeigh: lineWeigh, lineRateBy: lineRateBy, lineKg: lineKg, purchaseCalc: purchaseCalc, expenseAmount: expenseAmount, EXPENSE_KINDS: EXPENSE_KINDS, splitShift: splitShift, hhmm: hhmm, DEFAULT_SHIFT: DEFAULT_SHIFT, APP_VERSION: APP_VERSION };
+  const api = { createCore: createCore, bagSplit: bagSplit, bagTotal: bagTotal, DEFAULT_RATES: DEFAULT_RATES, validate: validate, uuid: uuid, todayLocal: todayLocal, durationText: durationText, fmtDate: fmtDate, cleanNames: cleanNames, pickUpdate: pickUpdate, normalizeBuyParty: normalizeBuyParty, RATE_BYS: RATE_BYS, ITEM_KINDS: ITEM_KINDS, itemKind: itemKind, ratesForKind: ratesForKind, PACK: PACK, UNIT: UNIT, buyItem: buyItem, cleanBuyItems: cleanBuyItems, findBuyItem: findBuyItem, lineWeigh: lineWeigh, lineRateBy: lineRateBy, lineKg: lineKg, purchaseCalc: purchaseCalc, expenseAmount: expenseAmount, EXPENSE_KINDS: EXPENSE_KINDS, splitShift: splitShift, hhmm: hhmm, DEFAULT_SHIFT: DEFAULT_SHIFT, APP_VERSION: APP_VERSION };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.JCM = api;
 
@@ -1023,11 +1058,13 @@
       return 'कुल समय: ' + t + (sp.ot ? '  ·  काम ' + hhmm(sp.work) + ' + ओवरटाइम ' + hhmm(sp.ot) : '  ·  पूरा काम के घंटों में');
     })();
     $('inc').textContent = (function () {
-      const bags = Number($('bags').value) || 0;
-      const n = Object.keys(selLabour).filter(function (x) { return selLabour[x]; }).length;
+      const x = { small: Number($('bagsSmall').value) || 0, big: Number($('bagsBig').value) || 0 };
+      const bags = x.small + x.big;
+      const n = Object.keys(selLabour).filter(function (y) { return selLabour[y]; }).length;
       if (!bags || !n) return '';
-      const I = core.incentive($('start').value, $('finish').value, bags, n);
-      let t = 'इंसेंटिव ₹' + Math.round(I.total) + ' — हर लेबर ₹' + I.perLabour.toFixed(0);
+      const I = core.incentive($('start').value, $('finish').value, { bagsSmall: x.small, bagsBig: x.big }, n);
+      let t = bags + ' बोरा (छोटे ' + x.small + ' · बड़े ' + x.big + ') — इंसेंटिव ₹' + Math.round(I.total) +
+        ', हर लेबर ₹' + I.perLabour.toFixed(0);
       if (I.wage > 0) t += '  ·  दिहाड़ी काटकर ' + (I.net < 0 ? '−₹' : '+₹') + Math.abs(I.net).toFixed(0);
       return t;
     })();
@@ -1035,19 +1072,22 @@
   function formEntry() {
     return {
       date: $('date').value, type: selType, goods: $('goods').value, start: $('start').value, finish: $('finish').value,
-      bags: $('bags').value, labour: Object.keys(selLabour).filter(function (n) { return selLabour[n]; })
+      bagsSmall: $('bagsSmall').value, bagsBig: $('bagsBig').value,
+      labour: Object.keys(selLabour).filter(function (n) { return selLabour[n]; })
     };
   }
   function loadEntry(e) {
     $('date').value = e.date || todayLocal(); selType = e.type || selType; $('goods').value = e.goods || '';
-    $('start').value = e.start || ''; $('finish').value = e.finish || ''; $('bags').value = e.bags || '';
+    $('start').value = e.start || ''; $('finish').value = e.finish || '';
+    const bs = bagSplit(e);
+    $('bagsSmall').value = bs.small || ''; $('bagsBig').value = bs.big || '';
     selLabour = {}; (e.labour || []).forEach(function (n) { selLabour[n] = true; });
     renderSel();
   }
   function saveDraft() { core.setDraft(formEntry()); }
   function resetForm(keepContext) {
     const e = formEntry();
-    $('start').value = ''; $('finish').value = ''; $('bags').value = ''; selLabour = {};
+    $('start').value = ''; $('finish').value = ''; $('bagsSmall').value = ''; $('bagsBig').value = ''; selLabour = {};
     if (!keepContext) { $('date').value = todayLocal(); $('goods').value = ''; }
     else { $('date').value = e.date || todayLocal(); }
     renderSel(); core.setDraft(null);
@@ -1066,21 +1106,53 @@
     $('badge').textContent = (nP + nF) ? String(nP + nF) : '';
     const box = $('items'); box.innerHTML = '';
     if (!q.length) { box.innerHTML = '<div class="empty">अभी कोई entry नहीं।</div>'; return; }
-    q.forEach(function (it) {
-      const e = it.entry; const d = document.createElement('div'); d.className = 'item';
+
+    /* क्रम: पहले वे जो अभी Sheet में नहीं गईं (उन पर काम बाक़ी है), फिर भेजी हुई —
+       दोनों में नई तारीख़ ऊपर। पहले सिर्फ़ जोड़ने का क्रम था, इसलिए पुरानी तारीख़
+       की entry बाद में भरने पर सबसे ऊपर आ जाती और सूची बेतरतीब दिखती।        */
+    const order = q.slice().sort(function (a, b) {
+      const ua = a.status === 'sent' ? 1 : 0, ub = b.status === 'sent' ? 1 : 0;
+      if (ua !== ub) return ua - ub;
+      const da = String(a.entry.date || ''), db = String(b.entry.date || '');
+      if (da !== db) return db.localeCompare(da);
+      return String(b.createdAt || '').localeCompare(String(a.createdAt || ''));
+    });
+
+    order.forEach(function (it) {
+      const e = it.entry; const d = document.createElement('div'); d.className = 'buy';
       const st = it.status === 'pending' ? (solo ? 'फ़ोन में' : 'बाकी')
                : it.status === 'sent' ? ('Sheet row ' + (it.result && it.result.serial != null ? it.result.serial : '?')) : 'अटकी';
+      const sp = core.split(e.start, e.finish);
+      const bs = bagSplit(e), tot = bs.small + bs.big;
+      const I = core.incentive(e.start, e.finish, e, e.labour.length);
+      const names = e.labour.join(', ');
+
       d.innerHTML =
-        '<div class="t"><span>' + esc(fmtDate(e.date)) + ' · ' + esc(e.type) + ' · ' + esc(e.goods) + '</span><span class="st ' + it.status + '">' + esc(st) + '</span></div>' +
-        '<div class="s">' + esc(e.start) + '–' + esc(e.finish) + ' · ' + esc(e.bags) + ' बोरा · ' + e.labour.length + ' लेबर: ' + esc(e.labour.join(', ')) + '</div>' +
-        (function () {
-          const sp = core.split(e.start, e.finish);
-          const I = core.incentive(e.start, e.finish, e.bags, e.labour.length);
-          return '<div class="s">काम ' + hhmm(sp.work) + (sp.ot ? ' · <b style="color:#ef6c00">ओवरटाइम ' + hhmm(sp.ot) + '</b>' : '') + '</div>' +
-                 '<div class="s">इंसेंटिव ₹' + Math.round(I.total) + ' (हर लेबर ₹' + I.perLabour.toFixed(0) + ')' +
-                 (I.wage > 0 ? ' · दिहाड़ी काटकर <b style="color:' + (I.net < 0 ? '#c62828' : '#2e7d32') + '">' +
-                   (I.net < 0 ? '−₹' : '+₹') + Math.abs(I.net).toFixed(0) + '</b>' : '') + '</div>'; })() +
+        '<div class="bh"><div class="bhl"><b>' + esc(fmtDate(e.date)) + '</b>' +
+          '<div class="dim">' + esc(e.type + ' · ' + e.goods) + '</div></div>' +
+          '<span class="st ' + it.status + '">' + esc(st) + '</span></div>' +
+
+        // एक नज़र में: समय, बोरे, लेबर
+        '<div class="facts">' +
+          '<div><span>' + esc(e.start) + '–' + esc(e.finish) + '</span><em>' + esc(hhmm(sp.total)) + '</em></div>' +
+          '<div><span>बोरे</span><em>' + tot + '</em>' +
+            '<i>' + (bs.small && bs.big ? 'छोटे ' + bs.small + ' · बड़े ' + bs.big
+                   : bs.small ? 'सब छोटे' : 'सब बड़े') + '</i></div>' +
+          '<div><span>लेबर</span><em>' + e.labour.length + '</em></div>' +
+        '</div>' +
+
+        '<div class="s">काम ' + hhmm(sp.work) +
+          (sp.ot ? ' · <b style="color:#ef6c00">ओवरटाइम ' + hhmm(sp.ot) + '</b>' : '') + '</div>' +
+        '<div class="s">इंसेंटिव <b>₹' + Math.round(I.total) + '</b> · हर लेबर ₹' + I.perLabour.toFixed(0) +
+          (I.wage > 0 ? ' · दिहाड़ी काटकर <b style="color:' + (I.net < 0 ? '#c62828' : '#2e7d32') + '">' +
+            (I.net < 0 ? '−₹' : '+₹') + Math.abs(I.net).toFixed(0) + '</b>' : '') + '</div>' +
+
+        // नाम लंबे होते हैं — 3 से ज़्यादा हों तो समेट दो
+        (e.labour.length > 3
+          ? '<details><summary>' + e.labour.length + ' लेबर — नाम देखो</summary><div class="s">' + esc(names) + '</div></details>'
+          : '<div class="s">' + esc(names) + '</div>') +
         (it.error ? '<div class="e">' + esc(it.error) + '</div>' : '');
+
       if (it.status !== 'sent') {
         const wrap = document.createElement('div');
         if (it.status === 'failed') {
@@ -1280,7 +1352,7 @@
     const M = core.money($('repFrom').value, $('repTo').value);
     const W = M.buckets.work, O = M.buckets.ot, X = M.buckets.mixed, A = M.buckets.all;
     $('rateLine').textContent = 'दिहाड़ी ₹' + M.rates.wage + '/मज़दूर-घंटा (सिर्फ़ काम के घंटों में) · ₹' +
-      M.rates.perBag + '/बोरा (दोनों में)। ⚙ में बदल सकते हो।';
+      M.rates.perSmall + '/छोटा · ₹' + M.rates.perBig + '/बड़ा बोरा (दोनों हिस्सों में)। ⚙ में बदल सकते हो।';
 
     // सुस्ती की क़ीमत
     let wb = '';
@@ -1314,7 +1386,7 @@
     const sign = function (v) { return (v == null) ? '—' : (v > 0 ? '+' : '') + rs(v); };
     const sign2 = function (v) { return (v == null) ? '—' : (v > 0 ? '+₹' : v < 0 ? '−₹' : '₹') + Math.abs(v).toFixed(2); };
     let nh = '<thead><tr><th></th><th>काम के घंटे</th><th>ओवरटाइम</th></tr></thead><tbody>';
-    nh += row('इंसेंटिव दिया (₹' + M.rates.perBag + '/बोरा)', rs(W.piece), rs(O.piece));
+    nh += row('इंसेंटिव दिया (₹' + M.rates.perSmall + '/छोटा · ₹' + M.rates.perBig + '/बड़ा)', rs(W.piece), rs(O.piece));
     nh += row('उसी काम पर लगी दिहाड़ी', '−' + rs(W.wage), '−' + rs(O.wage));
     nh += '<tr><td><b>दिहाड़ी काटकर शुद्ध</b></td>' +
           '<td style="font-weight:800;color:' + (W.net < 0 ? '#c62828' : '#2e7d32') + '">' + esc(sign(W.net)) + '</td>' +
@@ -1916,7 +1988,7 @@
 
   // ---- events
   document.querySelectorAll('nav.tabs button').forEach(function (b) { b.onclick = function () { showView(b.getAttribute('data-view')); }; });
-  ['start', 'finish', 'bags', 'date', 'goods'].forEach(function (id) { $(id).addEventListener('change', function () { renderSel(); saveDraft(); }); $(id).addEventListener('input', saveDraft); });
+  ['start', 'finish', 'bagsSmall', 'bagsBig', 'date', 'goods'].forEach(function (id) { $(id).addEventListener('change', function () { renderSel(); saveDraft(); }); $(id).addEventListener('input', saveDraft); });
 
   $('save').onclick = async function () {
     const e = formEntry(); const err = validate(e, core.lists());
@@ -2135,12 +2207,13 @@
   }
   function ratesInfo() {
     const r = core.getRates();
-    $('rWage').value = r.wage; $('rBag').value = r.perBag;
-    $('ratesInfo').textContent = 'अभी: ₹' + r.wage + '/मज़दूर-घंटा दिहाड़ी · ₹' + r.perBag + '/बोरा';
+    $('rWage').value = r.wage; $('rSmall').value = r.perSmall; $('rBig').value = r.perBig;
+    $('ratesInfo').textContent = 'अभी: ₹' + r.wage + '/मज़दूर-घंटा दिहाड़ी · ₹' + r.perSmall + '/छोटा बोरा · ₹' + r.perBig + '/बड़ा बोरा' +
+      (r.perSmall === r.perBig ? '' : ' — इससे पहले की entries बड़े बोरे में गिनी जाती हैं।');
   }
   $('saveRates').onclick = function () {
     try {
-      core.setRates($('rWage').value, $('rBag').value);
+      core.setRates($('rWage').value, $('rSmall').value, $('rBig').value);
       ratesInfo();
       toast('✔ दरें save हुईं', 'ok');
     } catch (e) { toast(e.message, 'err', 4000); }
