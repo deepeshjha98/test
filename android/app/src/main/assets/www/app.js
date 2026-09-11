@@ -10,7 +10,7 @@
 (function (root) {
   'use strict';
 
-  const APP_VERSION = '1.18.0';
+  const APP_VERSION = '1.19.0';
   const K = { api: 'jcm.api', key: 'jcm.key', lists: 'jcm.lists', queue: 'jcm.queue', draft: 'jcm.draft', shift: 'jcm.shift', rates: 'jcm.rates', buys: 'jcm.buys', buyLists: 'jcm.buylists' };
   const DEFAULT_SHIFT = { start: '08:30', finish: '18:30' };   // मिल का सामान्य समय; ⚙ सेटिंग से बदला जा सकता है
   // पैसे की दरें — ⚙ सेटिंग से बदली जा सकती हैं
@@ -1097,9 +1097,11 @@
       const n = Object.keys(selLabour).filter(function (y) { return selLabour[y]; }).length;
       if (!bags || !n) return '';
       const I = core.incentive($('start').value, $('finish').value, { bagsSmall: x.small, bagsBig: x.big }, n);
+      const sp2 = core.split($('start').value, $('finish').value);
       let t = bags + ' बोरा (छोटे ' + x.small + ' · बड़े ' + x.big + ') — इंसेंटिव ₹' + Math.round(I.total) +
         ', हर लेबर ₹' + I.perLabour.toFixed(0);
-      if (I.wage > 0) t += '  ·  दिहाड़ी काटकर ' + (I.net < 0 ? '−₹' : '+₹') + Math.abs(I.net).toFixed(0);
+      if (sp2.total) t += '  ·  लेबर-घंटे ' + hhmm(sp2.total * n) + '  ·  दिहाड़ी ₹' + Math.round(I.wage) +
+        '  ·  काटकर ' + (I.net < 0 ? '−₹' : '+₹') + Math.abs(I.net).toFixed(0);
       return t;
     })();
   }
@@ -1165,6 +1167,7 @@
                : 'अटकी';
       const sp = core.split(e.start, e.finish);
       const bs = bagSplit(e), tot = bs.small + bs.big;
+      const labMin = sp.total * e.labour.length;     // कुल मज़दूर-मिनट = घड़ी का समय × लेबर
       const I = core.incentive(e.start, e.finish, e, e.labour.length);
       const names = e.labour.join(', ');
 
@@ -1175,7 +1178,8 @@
 
         // एक नज़र में: समय, बोरे, लेबर
         '<div class="facts">' +
-          '<div><span>' + esc(e.start) + '–' + esc(e.finish) + '</span><em>' + esc(hhmm(sp.total)) + '</em></div>' +
+          '<div><span>' + esc(e.start) + '–' + esc(e.finish) + '</span><em>' + esc(hhmm(sp.total)) + '</em>' +
+            '<i>लेबर-घंटे ' + esc(hhmm(labMin)) + '</i></div>' +
           '<div><span>बोरे</span><em>' + tot + '</em>' +
             '<i>' + (bs.small && bs.big ? 'छोटे ' + bs.small + ' · बड़े ' + bs.big
                    : bs.small ? 'सब छोटे' : 'सब बड़े') + '</i></div>' +
@@ -1184,9 +1188,17 @@
 
         '<div class="s">काम ' + hhmm(sp.work) +
           (sp.ot ? ' · <b style="color:#ef6c00">ओवरटाइम ' + hhmm(sp.ot) + '</b>' : '') + '</div>' +
-        '<div class="s">इंसेंटिव <b>₹' + Math.round(I.total) + '</b> · हर लेबर ₹' + I.perLabour.toFixed(0) +
-          (I.wage > 0 ? ' · दिहाड़ी काटकर <b style="color:' + (I.net < 0 ? '#c62828' : '#2e7d32') + '">' +
-            (I.net < 0 ? '−₹' : '+₹') + Math.abs(I.net).toFixed(0) + '</b>' : '') + '</div>' +
+        /* "हर लेबर ₹x" की जगह अब वह हिसाब जिससे शुद्ध बनता है:
+           इंसेंटिव, उतने ही समय की दिहाड़ी, और दोनों का फ़र्क़।              */
+        '<div class="s">इंसेंटिव <b>₹' + Math.round(I.total) + '</b> · दिहाड़ी ₹' + Math.round(I.wage) +
+          ' · काटकर <b style="color:' + (I.net < 0 ? '#c62828' : '#2e7d32') + '">' +
+          (I.net < 0 ? '−₹' : '+₹') + Math.abs(I.net).toFixed(0) + '</b></div>' +
+        /* दिहाड़ी सिर्फ़ काम के घंटों वाले हिस्से पर लगती है। जिस entry में दोनों
+           हिस्से हों, वहाँ यह न लिखा हो तो दिहाड़ी कम दिखकर अजीब लगती है।     */
+        (sp.work > 0 && sp.ot > 0
+          ? '<div class="s" style="color:#6b7480">दिहाड़ी सिर्फ़ काम के ' +
+            esc(hhmm(sp.work * e.labour.length)) + ' लेबर-घंटे पर</div>'
+          : '') +
 
         // नाम लंबे होते हैं — 3 से ज़्यादा हों तो समेट दो
         (e.labour.length > 3
