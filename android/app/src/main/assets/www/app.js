@@ -10,7 +10,7 @@
 (function (root) {
   'use strict';
 
-  const APP_VERSION = '1.19.0';
+  const APP_VERSION = '1.20.0';
   const K = { api: 'jcm.api', key: 'jcm.key', lists: 'jcm.lists', queue: 'jcm.queue', draft: 'jcm.draft', shift: 'jcm.shift', rates: 'jcm.rates', buys: 'jcm.buys', buyLists: 'jcm.buylists' };
   const DEFAULT_SHIFT = { start: '08:30', finish: '18:30' };   // मिल का सामान्य समय; ⚙ सेटिंग से बदला जा सकता है
   // पैसे की दरें — ⚙ सेटिंग से बदली जा सकती हैं
@@ -1100,8 +1100,13 @@
       const sp2 = core.split($('start').value, $('finish').value);
       let t = bags + ' बोरा (छोटे ' + x.small + ' · बड़े ' + x.big + ') — इंसेंटिव ₹' + Math.round(I.total) +
         ', हर लेबर ₹' + I.perLabour.toFixed(0);
-      if (sp2.total) t += '  ·  लेबर-घंटे ' + hhmm(sp2.total * n) + '  ·  दिहाड़ी ₹' + Math.round(I.wage) +
-        '  ·  काटकर ' + (I.net < 0 ? '−₹' : '+₹') + Math.abs(I.net).toFixed(0);
+      if (sp2.total) {
+        t += '  ·  लेबर-घंटे ' + hhmm(sp2.total * n);
+        t += (sp2.work === 0 && sp2.ot > 0)
+          ? '  ·  ओवरटाइम — दिहाड़ी नहीं, पूरा शुद्ध'
+          : '  ·  दिहाड़ी ₹' + Math.round(I.wage) +
+            '  ·  काटकर ' + (I.net < 0 ? '−₹' : '+₹') + Math.abs(I.net).toFixed(0);
+      }
       return t;
     })();
   }
@@ -1189,15 +1194,22 @@
         '<div class="s">काम ' + hhmm(sp.work) +
           (sp.ot ? ' · <b style="color:#ef6c00">ओवरटाइम ' + hhmm(sp.ot) + '</b>' : '') + '</div>' +
         /* "हर लेबर ₹x" की जगह अब वह हिसाब जिससे शुद्ध बनता है:
-           इंसेंटिव, उतने ही समय की दिहाड़ी, और दोनों का फ़र्क़।              */
-        '<div class="s">इंसेंटिव <b>₹' + Math.round(I.total) + '</b> · दिहाड़ी ₹' + Math.round(I.wage) +
-          ' · काटकर <b style="color:' + (I.net < 0 ? '#c62828' : '#2e7d32') + '">' +
-          (I.net < 0 ? '−₹' : '+₹') + Math.abs(I.net).toFixed(0) + '</b></div>' +
-        /* दिहाड़ी सिर्फ़ काम के घंटों वाले हिस्से पर लगती है। जिस entry में दोनों
-           हिस्से हों, वहाँ यह न लिखा हो तो दिहाड़ी कम दिखकर अजीब लगती है।     */
+           इंसेंटिव, उतने ही समय की दिहाड़ी, और दोनों का फ़र्क़।
+
+           ओवरटाइम में दिहाड़ी लगती ही नहीं, इसलिए वहाँ "दिहाड़ी ₹0 · काटकर +₹360"
+           लिखना उलझाता है (काटा क्या?) — नियम सीधे लिख देना साफ़ है।        */
+        '<div class="s">इंसेंटिव <b>₹' + Math.round(I.total) + '</b> · ' +
+          (sp.work === 0 && sp.ot > 0
+            ? 'ओवरटाइम — दिहाड़ी नहीं, पूरा शुद्ध'
+            : 'दिहाड़ी ₹' + Math.round(I.wage) + ' · काटकर <b style="color:' +
+              (I.net < 0 ? '#c62828' : '#2e7d32') + '">' +
+              (I.net < 0 ? '−₹' : '+₹') + Math.abs(I.net).toFixed(0) + '</b>') + '</div>' +
+        /* दोनों हिस्से वाली entry में दिहाड़ी सिर्फ़ काम के हिस्से पर लगी है —
+           यह न लिखा हो तो वह कम दिखकर अजीब लगती है।                        */
         (sp.work > 0 && sp.ot > 0
-          ? '<div class="s" style="color:#6b7480">दिहाड़ी सिर्फ़ काम के ' +
-            esc(hhmm(sp.work * e.labour.length)) + ' लेबर-घंटे पर</div>'
+          ? '<div class="s" style="color:#6b7480">ओवरटाइम में दिहाड़ी नहीं — ये ₹' +
+            Math.round(I.wage) + ' सिर्फ़ काम के ' + esc(hhmm(sp.work * e.labour.length)) +
+            ' लेबर-घंटे पर</div>'
           : '') +
 
         // नाम लंबे होते हैं — 3 से ज़्यादा हों तो समेट दो
