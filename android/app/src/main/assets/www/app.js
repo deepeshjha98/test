@@ -10,7 +10,7 @@
 (function (root) {
   'use strict';
 
-  const APP_VERSION = '1.21.0';
+  const APP_VERSION = '1.22.0';
   const K = { api: 'jcm.api', key: 'jcm.key', lists: 'jcm.lists', queue: 'jcm.queue', draft: 'jcm.draft', shift: 'jcm.shift', rates: 'jcm.rates', buys: 'jcm.buys', buyLists: 'jcm.buylists' };
   const DEFAULT_SHIFT = { start: '08:30', finish: '18:30' };   // मिल का सामान्य समय; ⚙ सेटिंग से बदला जा सकता है
   // पैसे की दरें — ⚙ सेटिंग से बदली जा सकती हैं
@@ -1969,17 +1969,78 @@
 
   let rateRows = [];
 
+  // सूची में जो एक भाव दिखता है — जिस नाप में सामान का भाव बोला जाता है
+  function headRate(x) {
+    if (!x) return null;
+    if (x.perQuintal != null) return { v: x.perQuintal, u: 'क्विं', key: 'perQuintal' };
+    if (x.perBag != null) return { v: x.perBag, u: PACK, key: 'perBag' };
+    if (x.perUnit != null) return { v: x.perUnit, u: UNIT, key: 'perUnit' };
+    return null;
+  }
+  // उसी नाप में पिछली खरीद का भाव — तुलना उसी से होनी चाहिए
+  function prevOf(x, key) {
+    for (let k = 1; k < x.history.length; k++) {
+      const v = x.history[k][key];
+      if (v != null) return v;
+    }
+    return null;
+  }
+
   function openHist(i) {
     const x = rateRows[i];
     if (!x) return;
     $('hTitle').textContent = x.item + ' · ' + packLabel(x.packKg, x.unitsPer);
     const uni = x.units > 0;
-    let h = '<div class="kv">ताज़ा भाव <b>' +
-      (x.perQuintal != null ? rs(x.perQuintal) + '/क्विं' : rs(x.perBag) + '/' + PACK) + '</b>' +
-      (x.lastDate ? ' · ' + esc(fmtDate(x.lastDate)) : '') + '<br>' +
-      '<span style="color:#6b7480">सब ' + x.lines + ' खरीद मिलाकर औसत ' +
-      (x.avgPerQuintal != null ? rs(x.avgPerQuintal) + '/क्विं' : rs(x.avgPerBag) + '/' + PACK) + '</span></div>' +
-      '<label>हर खरीद अलग-अलग — नई ऊपर</label><div class="scroll"><table class="rep"><thead><tr>' +
+    const hd = headRate(x);
+    const last = x.history[0] || null;
+
+    // भाव चढ़ा या उतरा — पिछली खरीद के मुक़ाबले
+    let move = '';
+    if (hd) {
+      const pv = prevOf(x, hd.key);
+      if (pv != null && pv > 0) {
+        const d = (hd.v - pv) / pv * 100;
+        const up = d > 0.05, dn = d < -0.05;
+        move = '<span style="color:' + (up ? '#c62828' : dn ? '#2e7d32' : '#6b7480') + '">' +
+          (up ? '▲ ' : dn ? '▼ ' : '') + (Math.abs(d) < 0.05 ? 'पिछली खरीद जितना ही' :
+            Math.abs(d).toFixed(1) + '% ' + (up ? 'महँगा' : 'सस्ता') + ' — पिछली ' + rs(pv)) + '</span>';
+      } else {
+        move = '<span style="color:#6b7480">पहली खरीद</span>';
+      }
+    }
+
+    let h = '<div class="kv">ताज़ा भाव <b style="font-size:19px;color:var(--amber)">' +
+      (hd ? rs(hd.v) + '/' + hd.u : '—') + '</b>' +
+      (x.lastDate ? '<br>' + esc(fmtDate(x.lastDate)) +
+        (last && last.party ? ' · ' + esc(last.party) : '') +
+        (last && last.vehicle ? ' · ' + esc(last.vehicle) : '') : '') +
+      (move ? '<br>' + move : '') + '</div>';
+
+    // तीनों नाप एक साथ — हर एक के नीचे उसी नाप के पिछले दो भाव
+    const row = function (label, latest, key, show) {
+      if (!show) return '';
+      const pv = [];
+      for (let k = 1; k < x.history.length && pv.length < 2; k++) {
+        const v = x.history[k][key];
+        if (v != null) pv.push(rs(v));
+      }
+      return '<tr><td>' + esc(label) + '</td><td' + (hd && key === hd.key ? ' class="ot"' : '') + '>' +
+        (latest == null ? '—' : esc(rs(latest))) +
+        (pv.length ? '<span class="prev">पिछले ' + esc(pv.join(' · ')) + '</span>' : '') + '</td></tr>';
+    };
+    h += '<label>भाव — हर नाप में</label><table class="rep">' +
+      row('₹/क्विंटल', x.perQuintal, 'perQuintal', x.perQuintal != null || x.avgPerQuintal != null) +
+      row('₹/' + PACK, x.perBag, 'perBag', true) +
+      row('₹/' + UNIT, x.perUnit, 'perUnit', uni) +
+      '</table>';
+
+    h += '<div class="kv" style="margin-top:10px">सब ' + x.lines + ' खरीद मिलाकर औसत <b>' +
+      (x.avgPerQuintal != null ? rs(x.avgPerQuintal) + '/क्विं' : rs(x.avgPerBag) + '/' + PACK) + '</b>' +
+      ' · कुल ' + esc(x.kg > 0 ? x.qtl.toFixed(2) + ' क्विं' : x.bags + ' ' + PACK) +
+      ' · ' + rs(x.total) +
+      (x.parties.length ? '<br>सप्लायर: ' + esc(x.parties.join(', ')) : '') + '</div>';
+
+    h += '<label>हर खरीद अलग-अलग — नई ऊपर</label><div class="scroll"><table class="rep"><thead><tr>' +
       '<th>तारीख़</th><th>मात्रा</th><th>₹/क्विं</th><th>₹/' + esc(PACK) + '</th>' +
       (uni ? '<th>₹/' + esc(UNIT) + '</th>' : '') + '</tr></thead><tbody>';
     x.history.forEach(function (r) {
@@ -2002,36 +2063,19 @@
   });
 
   function renderBuyList() {
-    /* क्विंटल का कॉलम (कुल कितना आया) हटा दिया — रोज़ के काम में उसकी ज़रूरत नहीं।
-       उसकी जगह पैक की नाप, जिससे यह भी साफ़ हो जाता है कि दो पंक्तियों वाला
-       एक ही सामान असल में दो अलग नाप का है।
-
-       भाव अब सबसे ताज़ा खरीद का दिखता है, औसत का नहीं — वरना नया माल नए भाव
-       पर आने पर वह पुराने में घुलकर छिप जाता। नाम के नीचे पिछले दो भाव भी,
-       और पंक्ति दबाने पर पूरा इतिहास।                                        */
+    /* सूची में हर सामान की सिर्फ़ एक लाइन — नाम, नाप, और उसका ताज़ा भाव।
+       पहले यहाँ ₹/क्विं, ₹/पैक, ₹/पीस और हर एक के पिछले भाव, सब एक साथ ठुँसे
+       थे; बीस सामान होते ही पढ़ना मुश्किल हो जाता था। पूरा ब्यौरा अब पंक्ति
+       दबाने पर खुलने वाले कार्ड में है।                                      */
     rateRows = core.buyRates('', '');
-    const anyUnit = rateRows.some(function (x) { return x.units > 0; });
-    let rh = '<thead><tr><th>सामान</th><th>' + esc(PACK) + '</th><th>₹/क्विं</th><th>₹/' + esc(PACK) + '</th>' +
-      (anyUnit ? '<th>₹/' + esc(UNIT) + '</th>' : '') + '</tr></thead><tbody>';
-    if (!rateRows.length) rh += '<tr><td colspan="' + (anyUnit ? 5 : 4) + '" style="text-align:center;color:#6b7480">कुछ नहीं</td></tr>';
+    let rh = '<thead><tr><th>सामान</th><th>ताज़ा भाव</th></tr></thead><tbody>';
+    if (!rateRows.length) rh += '<tr><td colspan="2" style="text-align:center;color:#6b7480">कुछ नहीं</td></tr>';
     rateRows.forEach(function (x, i) {
-      // हर खाने का अपना पिछला भाव — ऊपर ताज़ा, नीचे छोटे में पिछले दो
-      const cell = function (latest, key, cls) {
-        const prev = [];
-        for (let k = 1; k < x.history.length && prev.length < 2; k++) {
-          const v = x.history[k][key];
-          if (v != null) prev.push(rs(v));
-        }
-        return '<td' + (cls ? ' class="' + cls + '"' : '') + '>' +
-          (latest == null ? '—' : esc(rs(latest))) +
-          (prev.length ? '<span class="prev">' + esc(prev.join(' · ')) + '</span>' : '') + '</td>';
-      };
+      const hd = headRate(x);
       rh += '<tr class="tap" data-hist="' + i + '">' +
-        '<td>' + esc(x.item) + '</td>' +
-        '<td>' + esc(packLabel(x.packKg, x.unitsPer)) + '</td>' +
-        cell(x.perQuintal, 'perQuintal', 'ot') +
-        cell(x.perBag, 'perBag', '') +
-        (anyUnit ? cell(x.perUnit, 'perUnit', '') : '') + '</tr>';
+        '<td>' + esc(x.item) + '<span class="pk">' + esc(packLabel(x.packKg, x.unitsPer)) + '</span></td>' +
+        '<td class="ot">' + (hd ? esc(rs(hd.v)) + '<span class="pk">/' + esc(hd.u) + '</span>' : '—') + '</td>' +
+        '</tr>';
     });
     $('buyRates').innerHTML = rh + '</tbody>';
 

@@ -158,6 +158,9 @@
     .rep tr.tap td:first-child { color: var(--blue); }
     .rep .prev { display: block; font-size: 11px; color: var(--muted); font-weight: 400; margin-top: 2px; }
     .rep .pack { display: block; font-size: 11px; color: var(--muted); font-weight: 400; }
+    /* सूची की एक-लाइन वाली पंक्ति — नाप और नाप का नाम भाव के साथ ही, छोटे में */
+    .rep .pk { font-size: 11px; color: var(--muted); font-weight: 400; margin-left: 5px; }
+    #buyRates td { padding-top: 9px; padding-bottom: 9px; }
     .rep tr:last-child td { border-bottom: 0; }
     .scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
     .chips2 { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
@@ -245,7 +248,7 @@
       <button class="btn" id="newBuy" style="margin-top:0">➕ नई खरीद (ट्रक)</button>
       <div class="card" style="margin-top:12px">
         <label style="margin-top:0">सामान-वार खरीद रेट</label>
-        <div class="hint" style="margin-top:0">ऊपर ताज़ा भाव, नीचे छोटे में पिछले दो — ख़र्च समेत। पूरा इतिहास देखने के लिए पंक्ति दबाओ।</div>
+        <div class="hint" style="margin-top:0">हर सामान का ताज़ा भाव — ख़र्च समेत। पूरा ब्यौरा देखने के लिए सामान दबाओ।</div>
         <div class="scroll"><table class="rep" id="buyRates"></table></div>
       </div>
       <div class="card" id="buyList"></div>
