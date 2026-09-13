@@ -10,7 +10,7 @@
 (function (root) {
   'use strict';
 
-  const APP_VERSION = '1.20.0';
+  const APP_VERSION = '1.21.0';
   const K = { api: 'jcm.api', key: 'jcm.key', lists: 'jcm.lists', queue: 'jcm.queue', draft: 'jcm.draft', shift: 'jcm.shift', rates: 'jcm.rates', buys: 'jcm.buys', buyLists: 'jcm.buylists' };
   const DEFAULT_SHIFT = { start: '08:30', finish: '18:30' };   // मिल का सामान्य समय; ⚙ सेटिंग से बदला जा सकता है
   // पैसे की दरें — ⚙ सेटिंग से बदली जा सकती हैं
@@ -2015,18 +2015,23 @@
       (anyUnit ? '<th>₹/' + esc(UNIT) + '</th>' : '') + '</tr></thead><tbody>';
     if (!rateRows.length) rh += '<tr><td colspan="' + (anyUnit ? 5 : 4) + '" style="text-align:center;color:#6b7480">कुछ नहीं</td></tr>';
     rateRows.forEach(function (x, i) {
-      // पिछले दो भाव — वही जो ताज़ा से पहले आए थे
-      const prev = x.history.slice(1, 3).map(function (h) {
-        const v = h.perQuintal != null ? h.perQuintal : h.perBag;
-        return v == null ? '' : rs(v);
-      }).filter(Boolean);
+      // हर खाने का अपना पिछला भाव — ऊपर ताज़ा, नीचे छोटे में पिछले दो
+      const cell = function (latest, key, cls) {
+        const prev = [];
+        for (let k = 1; k < x.history.length && prev.length < 2; k++) {
+          const v = x.history[k][key];
+          if (v != null) prev.push(rs(v));
+        }
+        return '<td' + (cls ? ' class="' + cls + '"' : '') + '>' +
+          (latest == null ? '—' : esc(rs(latest))) +
+          (prev.length ? '<span class="prev">' + esc(prev.join(' · ')) + '</span>' : '') + '</td>';
+      };
       rh += '<tr class="tap" data-hist="' + i + '">' +
-        '<td>' + esc(x.item) +
-          (prev.length ? '<span class="prev">पिछले ' + esc(prev.join(' · ')) + '</span>' : '') + '</td>' +
+        '<td>' + esc(x.item) + '</td>' +
         '<td>' + esc(packLabel(x.packKg, x.unitsPer)) + '</td>' +
-        (x.perQuintal == null ? '<td>—</td>' : '<td class="ot">' + esc(rs(x.perQuintal)) + '</td>') +
-        '<td>' + esc(x.perBag == null ? '—' : rs(x.perBag)) + '</td>' +
-        (anyUnit ? '<td>' + esc(x.perUnit == null ? '—' : rs(x.perUnit)) + '</td>' : '') + '</tr>';
+        cell(x.perQuintal, 'perQuintal', 'ot') +
+        cell(x.perBag, 'perBag', '') +
+        (anyUnit ? cell(x.perUnit, 'perUnit', '') : '') + '</tr>';
     });
     $('buyRates').innerHTML = rh + '</tbody>';
 
