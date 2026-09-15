@@ -7,6 +7,31 @@ browser से भी हो जाएगा)।
 > जुड़ने के बाद कुछ नहीं करना पड़ता — हर entry, खरीद, दर, लिस्ट अपने-आप cloud
 > में भी रहती है, और नया फ़ोन लेने पर साइन-इन करते ही सब वापस आ जाता है।
 
+## सबसे कम मेहनत वाला रास्ता — Claude को MCP से जोड़ दो
+
+Claude (Code) को Supabase से **स्थायी रूप से** जोड़ने के दो तरीक़े हैं। जुड़ने के
+बाद नीचे भाग 1 के क़दम 3–6 (SQL, signups बंद, user बनाना, URL/key निकालना)
+Claude ख़ुद कर देता है — आपको सिर्फ़ खाता और project बनाना होता है।
+
+**तरीक़ा A (सबसे आसान, यही करो): claude.ai का custom connector**
+1. https://claude.ai → Settings → **Connectors** → **Add custom connector**
+2. URL भरो: `https://mcp.supabase.com/mcp` → Add → Supabase में sign-in करके
+   **Authorize** कर दो (OAuth — कोई token/चाबी कहीं नहीं लिखनी पड़ती)
+3. बस — अब हर session में Claude के पास Supabase के औज़ार रहेंगे।
+
+**तरीक़ा B (fallback): repo का `.mcp.json` + access token**
+repo में `.mcp.json` पहले से रखा है (उसमें कोई राज़ नहीं — token env से आता है):
+1. supabase.com → अपने avatar → Account Settings → **Access Tokens** →
+   Generate new token (`sbp_…`)
+2. claude.ai/code के अपने **environment की settings → Environment variables**
+   में `SUPABASE_ACCESS_TOKEN` नाम से डाल दो (git में कभी नहीं!)
+3. उसी environment की **network policy** में `api.supabase.com` और
+   `*.supabase.co` allow करो — अभी की policy इन्हें रोकती है।
+
+> ध्यान: MCP **Claude को** Supabase से जोड़ता है — फ़ोन की app को नहीं।
+> फ़ोन का data cloud तक app का अपना ☁️ Cloud backup (नीचे भाग 2) ही ले जाता
+> है; MCP से Claude उसी database को देखता-सँभालता है।
+
 ## भाग 1 — Supabase project (एक बार)
 
 1. **https://supabase.com** खोलो → *Start your project* → खाता बनाओ
@@ -51,28 +76,55 @@ browser से भी हो जाएगा)।
 
 ```sql
 -- झाजी चूड़ा मिल app का cloud खाता — दुबारा चलाने पर भी नहीं बिगड़ता
+
+-- 1) मुख्य table: फ़ोन की हर jcm.* key की एक row
 create table if not exists public.jcm_kv (
   k text primary key,
   v jsonb not null,
   updated_at timestamptz not null default now()
 );
 
-alter table public.jcm_kv enable row level security;
-
-drop policy if exists "signed in users only" on public.jcm_kv;
-create policy "signed in users only" on public.jcm_kv
-  for all to authenticated using (true) with check (true);
+-- 2) History: jcm_kv में जो भी बदले/मिटे, पुरानी क़ीमत अपने-आप यहाँ बचती है —
+--    कभी कुछ ग़लत लिखा गया तो हर key के पिछले 20 रूप dashboard से वापस मिल जाते हैं
+create table if not exists public.jcm_kv_history (
+  id bigint generated always as identity primary key,
+  k text not null,
+  v jsonb,
+  updated_at timestamptz not null default now()
+);
+create index if not exists jcm_kv_history_k on public.jcm_kv_history (k, id desc);
 
 create or replace function public.jcm_touch() returns trigger
 language plpgsql security definer set search_path = public as $$
 begin
+  if tg_op = 'UPDATE' or tg_op = 'DELETE' then
+    insert into public.jcm_kv_history(k, v) values (old.k, old.v);
+    delete from public.jcm_kv_history h
+     where h.k = old.k
+       and h.id not in (select id from public.jcm_kv_history
+                         where k = old.k order by id desc limit 20);
+  end if;
+  if tg_op = 'DELETE' then return old; end if;
   new.updated_at = now();
   return new;
 end $$;
 
 drop trigger if exists jcm_kv_touch on public.jcm_kv;
-create trigger jcm_kv_touch before insert or update on public.jcm_kv
+create trigger jcm_kv_touch before insert or update or delete on public.jcm_kv
   for each row execute function public.jcm_touch();
+
+-- 3) ताले: सिर्फ़ signed-in user; अकेली anon key से कुछ नहीं खुलता
+alter table public.jcm_kv enable row level security;
+alter table public.jcm_kv_history enable row level security;
+
+drop policy if exists "signed in users only" on public.jcm_kv;
+create policy "signed in users only" on public.jcm_kv
+  for all to authenticated using (true) with check (true);
+
+drop policy if exists "history read only" on public.jcm_kv_history;
+create policy "history read only" on public.jcm_kv_history
+  for select to authenticated using (true);
+revoke insert, update, delete on table public.jcm_kv_history from anon, authenticated;
 ```
 
 ## ये 4 चीज़ें लिखकर सँभाल लो

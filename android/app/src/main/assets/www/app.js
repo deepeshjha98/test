@@ -2250,6 +2250,9 @@
       t = '✅ ' + st.email + (host ? ' · ' + host : '') + ' — सब cloud में सुरक्षित' +
         (st.lastSync ? ' · आख़िरी sync ' + new Date(st.lastSync).toLocaleTimeString('hi-IN', { hour: '2-digit', minute: '2-digit' }) : '');
     }
+    if (st.on && st.signupsOpen) {
+      t += ' ⚠️ Supabase में नए खातों का रास्ता खुला है — dashboard → Authentication → Sign In/Providers में "Allow new users to sign up" बंद करो, वरना कोई भी data देख सकता है।';
+    }
     $('supaState').textContent = t;
   }
   if (supa) {

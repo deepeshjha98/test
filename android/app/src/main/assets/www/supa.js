@@ -206,6 +206,22 @@
 
     function setProblem(p, text) { problem = p; problemText = text || ''; onState(); }
 
+    /* Setup की सबसे ख़तरनाक चूक: dashboard में "Allow new users to sign up"
+       बंद करना भूल गए। तब anon key हाथ लगते ही कोई भी खाता बनाकर data पढ़-लिख
+       सकता है। GoTrue के /settings से चुपचाप जाँचो और खुला मिले तो cfg में
+       निशान — ⚙ में चेतावनी दिखती रहेगी। जाँच fail हो जाए तो चुप रहो (यह
+       सुविधा है, sync की शर्त नहीं)।                                          */
+    function checkSignups() {
+      req('/auth/v1/settings', { method: 'GET' }, 8000).then(function (res) {
+        return res.ok ? res.json() : null;
+      }).then(function (j) {
+        if (!j || typeof j.disable_signup === 'undefined') return;
+        var c = supa.cfg(); if (!c) return;
+        c.signupsOpen = (j.disable_signup === false);
+        set(K_CFG, c); onState();
+      }).catch(function () { });
+    }
+
     function classify(e, res) {
       if (e && e.auth) { setProblem('auth', 'साइन-इन की मियाद ख़त्म — password फिर डालो।'); return; }
       if (res && res.status >= 500) {
@@ -326,6 +342,7 @@
         if (!email || !password) return Promise.reject(new Error('email और password दोनों चाहिए।'));
         return login(url, anonKey, email, password).then(function (session) {
           set(K_CFG, { url: url, anonKey: anonKey, email: email, session: session, connectedAt: now().toISOString() });
+          checkSignups();   // भरोसा नहीं, जाँच: signups खुले रह गए तो चेतावनी
           // इस फ़ोन का सब कुछ भेजने के लिए तैयार रखो (pull पहले merge कर लेगा)
           var d = get(K_DIRTY, []);
           allLocalKeys().forEach(function (k) { if (d.indexOf(k) < 0) d.push(k); });
@@ -342,6 +359,7 @@
         return login(c.url, c.anonKey, c.email, password).then(function (session) {
           c.session = session; set(K_CFG, c);
           setProblem('', '');
+          checkSignups();
           return supa.syncNow();
         });
       },
@@ -385,6 +403,7 @@
           email: c ? c.email : '',
           url: c ? c.url : '',
           pending: get(K_DIRTY, []).length,
+          signupsOpen: !!(c && c.signupsOpen),
           lastSync: meta ? meta.lastSync : '',
           problem: problem,
           problemText: problemText
