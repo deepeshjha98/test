@@ -10,7 +10,7 @@
 (function (root) {
   'use strict';
 
-  const APP_VERSION = '1.22.0';
+  const APP_VERSION = '1.23.0';
   const K = { api: 'jcm.api', key: 'jcm.key', lists: 'jcm.lists', queue: 'jcm.queue', draft: 'jcm.draft', shift: 'jcm.shift', rates: 'jcm.rates', buys: 'jcm.buys', buyLists: 'jcm.buylists' };
   const DEFAULT_SHIFT = { start: '08:30', finish: '18:30' };   // मिल का सामान्य समय; ⚙ सेटिंग से बदला जा सकता है
   // पैसे की दरें — ⚙ सेटिंग से बदली जा सकती हैं
@@ -1035,6 +1035,19 @@
 
   const $ = function (id) { return document.getElementById(id); };
   const store = (root.JCMDB && root.JCMDB.createStore()) || localStorage;   // db.js = IndexedDB; न मिले तो localStorage
+
+  /* Supabase cloud backup (supa.js) — store की हर लिखाई पर hook, ताकि बदली
+     key अपने-आप cloud चली जाए। जुड़ा न हो तो hook कुछ नहीं करता।            */
+  const supa = root.JCMSUPA ? JCMSUPA.createSupa({
+    storage: store,
+    fetchFn: fetch.bind(root),
+    onApplied: function () {   // cloud से data आया → वही ताज़गी जो restore पर होती है
+      try { renderList(); renderLists(); listsInfo(); fillLocalLists(); renderBuyList(); dbInfo(); } catch (_) { }
+      try { supaState(); } catch (_) { }
+    },
+    onState: function () { try { supaState(); } catch (_) { } }
+  }) : null;
+  if (supa) supa.attach();
   const core = createCore({ storage: store, fetchFn: fetch.bind(root) });
   let selType = null, selLabour = {}, view = 'entry', toastTimer = null, deferredInstall = null;
 
@@ -1145,7 +1158,12 @@
     // सिर्फ़-फ़ोन मोड में "बाकी/अटकी/Sheet में गईं" का कोई मतलब नहीं — बस कुल गिनती
     $('countsBox').hidden = solo;
     $('soloBox').hidden = !solo;
-    if (solo) $('nAll').textContent = q.length;
+    if (solo) {
+      $('nAll').textContent = q.length;
+      $('soloSafe').textContent = (supa && supa.enabled())
+        ? 'दर्ज entry — फ़ोन + cloud दोनों में सुरक्षित'
+        : 'दर्ज entry — सब फ़ोन में सुरक्षित';
+    }
     $('lblPending').textContent = 'बाकी (pending)';
     $('nPending').textContent = nP; $('nFailed').textContent = nF; $('nSent').textContent = nS;
     $('badge').textContent = solo ? '' : ((nP + nF) ? String(nP + nF) : '');
@@ -1253,9 +1271,17 @@
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
 
   async function doSync(quiet) {
-    if (core.localOnly()) {   // कोई Web App URL नहीं → सब कुछ फ़ोन में ही रहता है
+    if (core.localOnly()) {   // कोई Web App URL नहीं → Sheet में भेजने को कुछ नहीं
       renderList();
-      if (!quiet) toast('यह app अभी सिर्फ़ फ़ोन पर चल रही है — entries यहीं सुरक्षित हैं।');
+      if (supa && supa.enabled()) {
+        if (!quiet) toast('☁️ cloud से मिला रहा है…', 'ok', 2000);
+        supa.syncNow().then(function (r) {
+          if (!quiet) {
+            if (r && r.error) toast(supa.state().problemText || r.error, 'err', 4500);
+            else toast('☁️ हो गया — सब cloud में सुरक्षित', 'ok');
+          }
+        });
+      } else if (!quiet) toast('यह app अभी सिर्फ़ फ़ोन पर चल रही है — entries यहीं सुरक्षित हैं।');
       return;
     }
     if (!core.pending().length) { renderList(); if (!quiet) toast('भेजने को कुछ बाकी नहीं।'); return; }
@@ -1282,7 +1308,7 @@
     if (v === 'buy') { if (!draftBuy) { showBuyForm(false); renderBuyList(); } }
     if (v === 'settings') {
       $('api').value = core.getApi(); $('key').value = core.getKey();
-      shiftInfo(); ratesInfo(); fillLocalLists(); listsInfo(); dbInfo(); sheetState();
+      shiftInfo(); ratesInfo(); fillLocalLists(); listsInfo(); dbInfo(); sheetState(); supaState();
       const bl = core.buyLists();
       draftItems = bl.items.map(itemToDraft);
       renderItemList();
@@ -2123,9 +2149,11 @@
 
   // ---- मोड के हिसाब से hint
   function modeHints() {
-    $('saveHint').textContent = core.localOnly()
-      ? 'Save होते ही entry फ़ोन के local database में सुरक्षित। (Web App URL डालोगे तो Google Sheet में भी जाने लगेगी।)'
-      : 'Save होते ही entry phone में सुरक्षित; network मिलते ही Google Sheet में जाती है।';
+    $('saveHint').textContent = !core.localOnly()
+      ? 'Save होते ही entry phone में सुरक्षित; network मिलते ही Google Sheet में जाती है।'
+      : (supa && supa.enabled())
+        ? 'Save होते ही entry फ़ोन में सुरक्षित, और अपने-आप cloud (Supabase) में भी।'
+        : 'Save होते ही entry फ़ोन के local database में सुरक्षित। (⚙ में cloud backup जोड़ोगे तो cloud में भी रहेगी।)';
   }
 
   // ---- database की हालत (सेटिंग में)
@@ -2175,7 +2203,7 @@
       const it = core.enqueue(e);
       buzz(40); resetForm(true); renderList();
       toast('✔ Entry save हुई (' + it.entry.labour.length + ' लेबर)' +
-        (core.localOnly() ? ' — फ़ोन में सुरक्षित' : online() ? ' — Sheet में भेज रहा है…' : ' — offline, बाद में जाएगी'), 'ok');
+        (core.localOnly() ? (supa && supa.enabled() ? ' — फ़ोन + cloud में सुरक्षित' : ' — फ़ोन में सुरक्षित') : online() ? ' — Sheet में भेज रहा है…' : ' — offline, बाद में जाएगी'), 'ok');
       if (!core.localOnly() && online()) {
         const r = await core.sync(); renderList();
         if (r.sent) toast('☁ Sheet में row ' + (core.sent()[0] && core.sent()[0].result ? core.sent()[0].result.serial : '') + ' बन गई', 'ok');
@@ -2199,6 +2227,67 @@
       : 'अभी सब कुछ सिर्फ़ फ़ोन में है — कहीं नहीं जाता, कुछ अपने-आप मिटता भी नहीं। ' +
         'दुबारा चालू करना हो तो ऊपर Web App URL डालकर save कर दो।';
   }
+  // ---- Supabase cloud backup (सेटिंग कार्ड) ----
+  function supaState() {
+    if (!supa) return;
+    const st = supa.state();
+    $('supaForm').hidden = st.on;
+    $('supaOnBox').hidden = !st.on;
+    $('supaReloginBox').hidden = st.problem !== 'auth';
+    let t;
+    if (!st.on) {
+      t = 'अभी जुड़ा नहीं है। नीचे Supabase project की जानकारी भरो — फिर हर बदलाव अपने-आप cloud में भी रहेगा।';
+    } else if (st.problem === 'auth') {
+      t = '⚠️ ' + st.problemText;
+    } else if (st.problem) {
+      t = '⏳ ' + st.pending + ' बदलाव भेजने बाक़ी — ' + st.problemText;
+    } else if (st.busy) {
+      t = '🔄 cloud से मिला रहा है…';
+    } else if (st.pending > 0) {
+      t = '⏳ ' + st.pending + ' बदलाव भेजने बाक़ी — network आते ही अपने-आप जाएँगे।';
+    } else {
+      let host = ''; try { host = new URL(st.url).host; } catch (_) { }
+      t = '✅ ' + st.email + (host ? ' · ' + host : '') + ' — सब cloud में सुरक्षित' +
+        (st.lastSync ? ' · आख़िरी sync ' + new Date(st.lastSync).toLocaleTimeString('hi-IN', { hour: '2-digit', minute: '2-digit' }) : '');
+    }
+    $('supaState').textContent = t;
+  }
+  if (supa) {
+    $('supaConnect').onclick = async function () {
+      const btn = $('supaConnect');
+      btn.disabled = true; btn.textContent = '☁️ जुड़ रहा है…';
+      try {
+        const r = await supa.connect($('supaUrl').value, $('supaKey').value, $('supaEmail').value, $('supaPass').value);
+        $('supaPass').value = '';
+        if (r && r.error) toast('जुड़ गया, पर पहला sync नहीं हो पाया — ' + (supa.state().problemText || r.error), 'err', 5000);
+        else toast('☁️ जुड़ गया — data cloud में भी सुरक्षित रहेगा', 'ok', 3500);
+        renderList();
+      } catch (e) {
+        toast(e && e.message ? e.message : 'जुड़ नहीं पाया — URL/key/network जाँचो।', 'err', 5000);
+      }
+      btn.disabled = false; btn.textContent = '☁️ जोड़ो और मिलाओ';
+      supaState(); modeHints();
+    };
+    $('supaSyncNow').onclick = function () { doSync(false); supaState(); };
+    $('supaRelogin').onclick = async function () {
+      const btn = $('supaRelogin');
+      btn.disabled = true;
+      try {
+        await supa.relogin($('supaPass2').value);
+        $('supaPass2').value = '';
+        toast('☁️ फिर जुड़ गया — अटका data भेज दिया', 'ok', 3500);
+      } catch (e) { toast(e && e.message ? e.message : 'साइन-इन नहीं हुआ', 'err', 5000); }
+      btn.disabled = false;
+      supaState();
+    };
+    $('supaOff').onclick = function () {
+      if (!confirm('Cloud backup हटाना है? Data फ़ोन में और cloud में जैसा है वैसा ही रहेगा — बस अब आगे अपने-आप नहीं जाएगा।')) return;
+      supa.disconnect();
+      supaState(); modeHints(); renderList();
+      toast('Cloud backup हटा दिया — data फ़ोन में सुरक्षित है', 'ok', 3500);
+    };
+  }
+
   $('saveSettings').onclick = function () {
     core.setApi($('api').value); core.setKey($('key').value);
     sheetState(); modeHints(); renderList(); toast('सेटिंग save हो गई', 'ok');
@@ -2453,9 +2542,9 @@
     } catch (e) { toast(e.message, 'err', 4000); }
   };
 
-  window.addEventListener('online', function () { setNet(); doSync(true); });
+  window.addEventListener('online', function () { setNet(); doSync(true); if (supa) supa.kick(); });
   window.addEventListener('offline', setNet);
-  document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'visible' && online()) doSync(true); });
+  document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'visible' && online()) { doSync(true); if (supa) supa.kick(); } });
   window.addEventListener('beforeinstallprompt', function (e) { e.preventDefault(); deferredInstall = e; $('installBtn').hidden = false; });
   $('installBtn').onclick = async function () { if (!deferredInstall) return; deferredInstall.prompt(); await deferredInstall.userChoice; deferredInstall = null; $('installBtn').hidden = true; };
 
@@ -2478,6 +2567,8 @@
     if (!inApk && 'serviceWorker' in navigator) { navigator.serviceWorker.register('./sw.js').catch(function () { }); }
     setNet();
     modeHints();
+    supaState();
+    if (supa && supa.enabled() && online()) supa.kick();   // cloud से मिलाओ (pull + बचा push)
     applyQuickRange();
     checkUpdate(false);   // चुपचाप, 6 घंटे में एक बार से ज़्यादा नहीं
     $('installHint').textContent = inApk ? 'यह installed app है।' : /iPhone|iPad/.test(navigator.userAgent) ? 'iPhone: Safari में Share → "Add to Home Screen"।' : 'Android/Chrome: menu → "Add to Home screen" / "Install app"।';

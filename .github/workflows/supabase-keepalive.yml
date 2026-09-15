@@ -1,0 +1,31 @@
+# Free Supabase project हफ़्ते भर बेकार रहे तो सो जाता है — यह उसे हल्का ping
+# देकर जगाए रखता है। repo secrets में SUPABASE_URL और SUPABASE_ANON_KEY भरे
+# हों तभी कुछ करता है; ख़ाली हों तो चुपचाप हरा निकल जाता है (कोई राज़ code में नहीं)।
+name: Supabase keepalive
+
+on:
+  schedule:
+    - cron: '13 3 * * 1,4'   # सोम+गुरु 03:13 UTC = 08:43 IST
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: REST ping
+        env:
+          URL: ${{ secrets.SUPABASE_URL }}
+          KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          if [ -z "$URL" ] || [ -z "$KEY" ]; then
+            echo "secrets नहीं भरे — कुछ नहीं करना (docs/SUPABASE_SETUP.md देखो)"
+            exit 0
+          fi
+          code=$(curl -s -o /dev/null -w '%{http_code}' "$URL/rest/v1/" -H "apikey: $KEY")
+          echo "HTTP $code"
+          case "$code" in
+            2*|3*|401) echo "project जगा हुआ है" ;;   # 401 भी 'ज़िंदा' ही है
+            *) echo "::warning::project जवाब नहीं दे रहा (HTTP $code) — dashboard खोलकर जगाओ"; exit 0 ;;
+          esac

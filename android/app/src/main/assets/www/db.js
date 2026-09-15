@@ -117,6 +117,7 @@
     var store = {
       // app.js को localStorage जैसा ही interface मिलता है
       getItem: function (k) { return Object.prototype.hasOwnProperty.call(mem, k) ? mem[k] : null; },
+      keys: function () { return Object.keys(mem); },
       setItem: function (k, v) { mem[k] = String(v); persist(k, String(v)); },
       removeItem: function (k) { delete mem[k]; persist(k, null); },
 
