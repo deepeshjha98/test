@@ -16,11 +16,13 @@ jobs:
     steps:
       - name: REST ping
         env:
-          URL: ${{ secrets.SUPABASE_URL }}
-          KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          # secrets भरे हों तो वही; वरना app के config.js वाले खुले मान —
+          # ये दोनों client-side चीज़ें हैं, repo में पहले से हैं (राज़ नहीं)
+          URL: ${{ secrets.SUPABASE_URL || 'https://xpozollgargifqdfjaay.supabase.co' }}
+          KEY: ${{ secrets.SUPABASE_ANON_KEY || 'sb_publishable_olKB4I9FIinJKHHfC9Ykeg_AJ7xd82n' }}
         run: |
           if [ -z "$URL" ] || [ -z "$KEY" ]; then
-            echo "secrets नहीं भरे — कुछ नहीं करना (docs/SUPABASE_SETUP.md देखो)"
+            echo "URL/key नहीं मिले — कुछ नहीं करना"
             exit 0
           fi
           code=$(curl -s -o /dev/null -w '%{http_code}' "$URL/rest/v1/" -H "apikey: $KEY")

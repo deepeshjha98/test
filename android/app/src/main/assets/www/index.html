@@ -364,10 +364,12 @@
       <label style="margin-top:0">☁️ Cloud backup (Supabase)</label>
       <div class="hint" style="margin-top:0" id="supaState"></div>
       <div id="supaForm">
-        <label>Project URL</label>
-        <input type="url" id="supaUrl" placeholder="https://xxxx.supabase.co" autocapitalize="off" autocorrect="off" spellcheck="false">
-        <label>anon public key</label>
-        <input type="text" id="supaKey" placeholder="eyJ… या sb_publishable_…" autocapitalize="off" autocorrect="off" spellcheck="false">
+        <div id="supaSrv">
+          <label>Project URL</label>
+          <input type="url" id="supaUrl" placeholder="https://xxxx.supabase.co" autocapitalize="off" autocorrect="off" spellcheck="false">
+          <label>anon public key</label>
+          <input type="text" id="supaKey" placeholder="eyJ… या sb_publishable_…" autocapitalize="off" autocorrect="off" spellcheck="false">
+        </div>
         <label>Email</label>
         <input type="email" id="supaEmail" autocapitalize="off" autocorrect="off" spellcheck="false">
         <label>Password</label>

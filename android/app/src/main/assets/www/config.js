@@ -1,6 +1,17 @@
 // (optional) यहाँ भरो तो हर phone पर app पहली बार खुलते ही configured मिलेगी।
-// खाली रखो तो app की ⚙ सेटिंग से भरना होगा। App में एक बार सेटिंग save हो गई तो यह file उसे नहीं बदलती।
+// App में एक बार सेटिंग save हो गई तो यह file उसे नहीं बदलती।
 window.JCM_CONFIG = {
-  api: '',   // Apps Script Web App URL, जैसे 'https://script.google.com/macros/s/…/exec'
-  key: ''    // Code.gs का APP_KEY (खाली हो तो खाली)
+  api: '',   // (पुराना) Apps Script Web App URL
+  key: '',   // (पुराना) Code.gs का APP_KEY
+
+  /* ☁️ Cloud backup (Supabase) — URL और anon key यहीं भरे हुए हैं, इसलिए
+     ⚙ में सिर्फ़ email + password डालना होता है।
+     ये दोनों client-side चीज़ें हैं (हर app में खुली जाती हैं) — ताले (RLS +
+     signups बंद) बिना login कुछ नहीं खुलने देते। PASSWORD यहाँ कभी मत लिखना:
+     repo public है — password ही असली चाबी है, वह सिर्फ़ फ़ोन पर डाला जाता है। */
+  supa: {
+    url: 'https://xpozollgargifqdfjaay.supabase.co',
+    anonKey: 'sb_publishable_olKB4I9FIinJKHHfC9Ykeg_AJ7xd82n',
+    email: ''   // चाहो तो अपना login email भी भर लो — फिर सिर्फ़ password बचेगा
+  }
 };
