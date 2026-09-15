@@ -125,6 +125,9 @@ drop policy if exists "history read only" on public.jcm_kv_history;
 create policy "history read only" on public.jcm_kv_history
   for select to authenticated using (true);
 revoke insert, update, delete on table public.jcm_kv_history from anon, authenticated;
+
+-- trigger-function बाहर से (RPC) कोई न बुला सके — सिर्फ़ trigger ही चलाए
+revoke execute on function public.jcm_touch() from public, anon, authenticated;
 ```
 
 ## ये 4 चीज़ें लिखकर सँभाल लो
