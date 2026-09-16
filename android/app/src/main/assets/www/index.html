@@ -226,9 +226,8 @@
     </div>
 
     <div class="card">
-      <label>लेबर (जो शामिल थे) — <span id="cnt">0</span> चुने</label>
-      <div class="chips" id="labour"></div>
-      <div class="hint" id="labourHint"></div>
+      <label>लेबर संख्या (कितने लगे)</label>
+      <input type="number" id="labourN" inputmode="numeric" pattern="[0-9]*" min="1" step="1" placeholder="जैसे 4">
     </div>
 
     <button class="btn" id="save">✔ Save करो</button>
@@ -294,13 +293,13 @@
 
       <div class="card">
         <label style="margin-top:0">🧍 अनलोडिंग यहीं दर्ज करो (चाहो तो)</label>
-        <div class="hint" style="margin-top:0">समय और लेबर चुनो — बोरे की गिनती और छोटा/बड़ा इसी ट्रक के सामान के वज़न से अपने-आप बनेंगे (सीमा ⚙ की दरों में)। ख़ाली छोड़ोगे तो अलग से entry नहीं बनेगी।</div>
+        <div class="hint" style="margin-top:0">समय और लेबर संख्या भरो — बोरे की गिनती और छोटा/बड़ा इसी ट्रक के सामान के वज़न से अपने-आप बनेंगे (सीमा ⚙ की दरों में)। ख़ाली छोड़ोगे तो अलग से entry नहीं बनेगी।</div>
         <div class="row2">
           <div><label>स्टार्ट</label><input type="time" id="uStart"></div>
           <div><label>फिनिश</label><input type="time" id="uFinish"></div>
         </div>
-        <label>लेबर (छूकर चुनो)</label>
-        <div class="chips" id="uLabour"></div>
+        <label>लेबर संख्या</label>
+        <input type="number" id="uLabourN" inputmode="numeric" pattern="[0-9]*" min="1" step="1" placeholder="जैसे 4">
         <div class="hint" id="uRes"></div>
       </div>
 
@@ -359,9 +358,6 @@
           <div><b class="o" id="repOt">0:00</b><span>ओवरटाइम</span></div>
         </div>
         <div class="kv" id="repHead"></div>
-
-        <label>लेबर-घंटे</label>
-        <div class="scroll"><table class="rep" id="repLabour"></table></div>
 
         <label>दिन-वार</label>
         <div class="scroll"><table class="rep" id="repDays"></table></div>
@@ -448,9 +444,6 @@
 
       <label>सामान का प्रकार</label>
       <textarea id="llGoods" rows="3" placeholder="चूड़ा&#10;धान&#10;चावल"></textarea>
-
-      <label>लेबर के नाम</label>
-      <textarea id="llLabour" rows="6" placeholder="राम कुमार&#10;श्याम यादव&#10;मोहन साह"></textarea>
 
       <button class="btn blue" id="saveLists">लिस्ट फ़ोन में save करो</button>
     </div>
