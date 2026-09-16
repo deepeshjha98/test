@@ -10,7 +10,7 @@
 (function (root) {
   'use strict';
 
-  const APP_VERSION = '1.24.0';
+  const APP_VERSION = '1.25.0';
   const K = { api: 'jcm.api', key: 'jcm.key', lists: 'jcm.lists', queue: 'jcm.queue', draft: 'jcm.draft', shift: 'jcm.shift', rates: 'jcm.rates', buys: 'jcm.buys', buyLists: 'jcm.buylists' };
   const DEFAULT_SHIFT = { start: '08:30', finish: '18:30' };   // मिल का सामान्य समय; ⚙ सेटिंग से बदला जा सकता है
   // पैसे की दरें — ⚙ सेटिंग से बदली जा सकती हैं
@@ -2241,15 +2241,23 @@
       if (def.anonKey && !$('supaKey').value) $('supaKey').value = def.anonKey;
       if (def.email && !$('supaEmail').value) $('supaEmail').value = def.email;
       $('supaSrv').hidden = !!(def.url && def.anonKey);
+      /* email भी config में भरा है → user के सामने सिर्फ़ 'चाबी' का खाना।
+         अंदर से यह Supabase का sign-in ही है — चाबी उस खाते का password है। */
+      const keyOnly = !!def.email;
+      $('supaEmailLbl').hidden = keyOnly; $('supaEmail').hidden = keyOnly;
+      $('supaPassLbl').textContent = keyOnly ? 'चाबी (app token)' : 'Password';
     }
+    $('supaPass2Lbl').textContent = (def.email ? 'चाबी फिर डालो' : 'Password (फिर साइन-इन)');
     $('supaForm').hidden = st.on;
     $('supaOnBox').hidden = !st.on;
     $('supaReloginBox').hidden = st.problem !== 'auth';
     let t;
     if (!st.on) {
-      t = (def.url && def.anonKey)
-        ? 'Project app में पहले से भरा है (' + hostOf(def.url) + ') — बस email और password डालकर जोड़ो। फिर हर बदलाव अपने-आप cloud में भी रहेगा।'
-        : 'अभी जुड़ा नहीं है। नीचे Supabase project की जानकारी भरो — फिर हर बदलाव अपने-आप cloud में भी रहेगा।';
+      t = (def.url && def.anonKey && def.email)
+        ? 'सब पहले से भरा है (' + hostOf(def.url) + ') — बस चाबी डालकर जोड़ो। फिर हर बदलाव अपने-आप cloud में भी रहेगा।'
+        : (def.url && def.anonKey)
+          ? 'Project app में पहले से भरा है (' + hostOf(def.url) + ') — बस email और password डालकर जोड़ो। फिर हर बदलाव अपने-आप cloud में भी रहेगा।'
+          : 'अभी जुड़ा नहीं है। नीचे Supabase project की जानकारी भरो — फिर हर बदलाव अपने-आप cloud में भी रहेगा।';
     } else if (st.problem === 'auth') {
       t = '⚠️ ' + st.problemText;
     } else if (st.problem) {
@@ -2264,7 +2272,7 @@
         (st.lastSync ? ' · आख़िरी sync ' + new Date(st.lastSync).toLocaleTimeString('hi-IN', { hour: '2-digit', minute: '2-digit' }) : '');
     }
     if (st.on && st.signupsOpen) {
-      t += ' ⚠️ Supabase में नए खातों का रास्ता खुला है — dashboard → Authentication → Sign In/Providers में "Allow new users to sign up" बंद करो, वरना कोई भी data देख सकता है।';
+      t += ' ⚠️ Supabase में नए खातों का रास्ता खुला है — बंद करना बेहतर है (dashboard → Authentication → Sign In/Providers)। data पर ताला वैसे भी सिर्फ़ आपकी चाबी से खुलता है।';
     }
     $('supaState').textContent = t;
   }

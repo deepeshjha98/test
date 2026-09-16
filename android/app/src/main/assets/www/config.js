@@ -12,6 +12,6 @@ window.JCM_CONFIG = {
   supa: {
     url: 'https://xpozollgargifqdfjaay.supabase.co',
     anonKey: 'sb_publishable_olKB4I9FIinJKHHfC9Ykeg_AJ7xd82n',
-    email: ''   // चाहो तो अपना login email भी भर लो — फिर सिर्फ़ password बचेगा
+    email: 'app@jcm.mill'   // app का अपना खाता — user के सामने बस 'चाबी' बचती है
   }
 };

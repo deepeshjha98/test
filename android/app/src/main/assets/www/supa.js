@@ -223,7 +223,7 @@
     }
 
     function classify(e, res) {
-      if (e && e.auth) { setProblem('auth', 'साइन-इन की मियाद ख़त्म — password फिर डालो।'); return; }
+      if (e && e.auth) { setProblem('auth', 'साइन-इन की मियाद ख़त्म — चाबी (password) फिर डालो।'); return; }
       if (res && res.status >= 500) {
         setProblem('paused', 'Supabase जवाब नहीं दे रहा (HTTP ' + res.status + ') — free project हफ़्ते भर बंद रहे तो सो जाता है; dashboard खोलते ही जग जाता है।');
         return;
