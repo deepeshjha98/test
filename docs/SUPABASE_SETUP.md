@@ -65,21 +65,21 @@ repo में `.mcp.json` पहले से रखा है (उसमें
 
 ## भाग 2 — App में (एक बार): बस एक चाबी
 
-v1.25.0 से project URL, anon key और app का खाता (`app@jcm.mill`) — तीनों
-`config.js` में पहले से भरे आते हैं। ⚙ सेटिंग → **☁️ Cloud backup** में बस एक
-खाना दिखता है: **चाबी (app token)**। चाबी डालकर **☁️ जोड़ो और मिलाओ** — ✅
-आ गया तो हो गया।
+v1.26.0 से app database को **सीधे छूती ही नहीं** — सारा आना-जाना एक ही secure
+API endpoint से होता है (Edge Function `jcm-sync`), और वह हर call पर चाबी
+(access token) जाँचता है। server पर चाबी का सिर्फ़ **hash** रखा है।
 
-- चाबी वह लंबी `jcm-…` वाली डोरी है जो setup के समय Claude ने बनाकर दी थी।
-  खो जाए तो Claude से "नई चाबी बना दो" बोल दो — वह MCP से पुरानी बदलकर नई
-  दे देगा (data वहीं रहता है)।
-- अंदर से यह Supabase का ही sign-in है (चाबी = app-खाते का password); ताले
-  (RLS) सीधे इसी खाते की uid से बँधे हैं — दूसरा कोई खाता बन भी जाए तो उसे
-  data नहीं दिखता।
-- चाबी app/repo/GitHub में कभी नहीं भरी जाती — repo public है। वह सिर्फ़
-  फ़ोन पर एक बार डलती है; app उसे save नहीं करती, सिर्फ़ मिले हुए token रखती है।
-- किसी और project से जोड़ना हो तो `config.js` का `supa` block ख़ाली कर दो —
-  चारों खाने फिर दिखने लगते हैं।
+⚙ सेटिंग → **☁️ Cloud backup** → एक ही खाना: **चाबी (access token)** →
+`jcm-…` वाली चाबी डालकर **☁️ जोड़ो और मिलाओ**। बस।
+
+- चाबी setup के समय Claude ने बनाकर दी थी। खो जाए/बदलनी हो तो Claude से
+  "नई चाबी बना दो" बोल दो — वह MCP से hash बदलकर नई दे देगा।
+- कोई email/password/login नहीं है — Supabase Auth इस्तेमाल ही नहीं होता,
+  इसलिए signups वग़ैरह की कोई चिंता नहीं। tables पर सीधी पहुँच (REST) सबके
+  लिए बंद है — anon key से भी कुछ नहीं खुलता।
+- चाबी app/repo/GitHub में कभी नहीं भरी जाती — सिर्फ़ फ़ोन पर एक बार।
+- endpoint: `POST {url}/functions/v1/jcm-sync` (Authorization: Bearer चाबी),
+  ops: `ping` / `pull` / `push{rows}` / `del{k}`।
 
 ## SQL (क़दम 3 में paste करने के लिए)
 

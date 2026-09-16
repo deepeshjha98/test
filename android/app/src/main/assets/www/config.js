@@ -4,14 +4,11 @@ window.JCM_CONFIG = {
   api: '',   // (पुराना) Apps Script Web App URL
   key: '',   // (पुराना) Code.gs का APP_KEY
 
-  /* ☁️ Cloud backup (Supabase) — URL और anon key यहीं भरे हुए हैं, इसलिए
-     ⚙ में सिर्फ़ email + password डालना होता है।
-     ये दोनों client-side चीज़ें हैं (हर app में खुली जाती हैं) — ताले (RLS +
-     signups बंद) बिना login कुछ नहीं खुलने देते। PASSWORD यहाँ कभी मत लिखना:
-     repo public है — password ही असली चाबी है, वह सिर्फ़ फ़ोन पर डाला जाता है। */
+  /* ☁️ Cloud backup — app सिर्फ़ अपना API endpoint बुलाती है:
+       POST {url}/functions/v1/jcm-sync  (Authorization: Bearer <चाबी>)
+     URL client-side है, खुला रखना ठीक है। चाबी यहाँ कभी मत लिखना — repo
+     public है; चाबी सिर्फ़ फ़ोन पर एक बार डाली जाती है। */
   supa: {
-    url: 'https://xpozollgargifqdfjaay.supabase.co',
-    anonKey: 'sb_publishable_olKB4I9FIinJKHHfC9Ykeg_AJ7xd82n',
-    email: 'app@jcm.mill'   // app का अपना खाता — user के सामने बस 'चाबी' बचती है
+    url: 'https://xpozollgargifqdfjaay.supabase.co'
   }
 };

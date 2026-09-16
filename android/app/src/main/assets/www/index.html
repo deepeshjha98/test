@@ -367,22 +367,18 @@
         <div id="supaSrv">
           <label>Project URL</label>
           <input type="url" id="supaUrl" placeholder="https://xxxx.supabase.co" autocapitalize="off" autocorrect="off" spellcheck="false">
-          <label>anon public key</label>
-          <input type="text" id="supaKey" placeholder="eyJ… या sb_publishable_…" autocapitalize="off" autocorrect="off" spellcheck="false">
         </div>
-        <label id="supaEmailLbl">Email</label>
-        <input type="email" id="supaEmail" autocapitalize="off" autocorrect="off" spellcheck="false">
-        <label id="supaPassLbl">Password</label>
-        <input type="password" id="supaPass">
+        <label>चाबी (access token)</label>
+        <input type="password" id="supaPass" placeholder="jcm-…" autocapitalize="off" autocorrect="off" spellcheck="false">
         <button class="btn blue" id="supaConnect">☁️ जोड़ो और मिलाओ</button>
-        <div class="hint">एक बार का काम — इसके बाद हर बदलाव अपने-आप cloud में भी सुरक्षित रहेगा, और नए फ़ोन पर साइन-इन करते ही सब वापस आ जाएगा। Password save नहीं होता।</div>
+        <div class="hint">एक बार का काम — चाबी डालते ही हर बदलाव अपने-आप cloud में भी सुरक्षित रहेगा, और नए फ़ोन पर यही चाबी डालते ही सब वापस। app सीधी database नहीं छूती — सिर्फ़ अपना API endpoint, जो हर बार चाबी जाँचता है।</div>
       </div>
       <div id="supaOnBox" hidden>
         <button class="btn" id="supaSyncNow">🔄 अभी मिलाओ</button>
         <div id="supaReloginBox" hidden>
-          <label id="supaPass2Lbl">Password (फिर साइन-इन)</label>
-          <input type="password" id="supaPass2">
-          <button class="btn blue" id="supaRelogin">फिर साइन-इन करो</button>
+          <label>नई चाबी डालो</label>
+          <input type="password" id="supaPass2" placeholder="jcm-…" autocapitalize="off" autocorrect="off" spellcheck="false">
+          <button class="btn blue" id="supaRelogin">चाबी बदलो</button>
         </div>
         <button class="btn danger" id="supaOff" style="margin-top:10px">Cloud से हटाओ — data फ़ोन में रहेगा</button>
       </div>

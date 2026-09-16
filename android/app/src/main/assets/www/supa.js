@@ -21,15 +21,17 @@
        entry/खरीद (id वाली सूचियाँ) id से मिलाकर एक कर दी जाती हैं, बाक़ी
        (दरें, शिफ्ट, लिस्ट) में फ़ोन वाला रहता है — और सब वापस cloud में
        धकेल दिया जाता है।
-     - साइन-इन email+password से (Supabase Auth); password कभी save नहीं
-       होता, सिर्फ़ मिले हुए token रहते हैं। token अपने-आप refresh होता है।
-     - jcm.supa* (token वग़ैरह), jcm.api/jcm.key (पुराने Sheet के राज़),
+     - app database को कभी सीधे नहीं छूती: सारा आना-जाना एक ही secure API
+       endpoint (Edge Function jcm-sync) से होता है, और वह हर call पर चाबी
+       (access token, Bearer) जाँचता है — server पर सिर्फ़ चाबी का hash रखा
+       है। कोई email/password/login नहीं; tables पर सीधी पहुँच सबके लिए बंद।
+     - jcm.supa* (चाबी वग़ैरह), jcm.api/jcm.key (पुराने Sheet के राज़),
        jcm.draft (अधूरा फ़ॉर्म) और jcm.up* (अपडेट-जाँच) कभी cloud नहीं जाते।
 */
 (function (root) {
   'use strict';
 
-  var K_CFG = 'jcm.supa';        // { url, anonKey, email, session:{access_token,refresh_token,expiresAt} }
+  var K_CFG = 'jcm.supa';        // { url, token } — endpoint का पता और app की चाबी
   var K_SEEN = 'jcm.supaSeen';   // { key: updated_at } — आख़िरी बार cloud में इस रूप में देखा था
   var K_DIRTY = 'jcm.supaDirty'; // [key,…] — local में बदला, cloud भेजना बाक़ी
   var K_META = 'jcm.supaMeta';   // { lastSync } — सिर्फ़ दिखाने के लिए
@@ -124,106 +126,40 @@
       timer = setTimer(function () { timer = null; supa.syncNow(); }, debounceMs);
     }
 
-    // ---- HTTP ----
-    function req(path, init, tmo) {
+    /* ---- HTTP: सब कुछ एक ही endpoint से ----
+       POST {url}/functions/v1/jcm-sync, Authorization: Bearer <चाबी>।
+       endpoint server पर चाबी का hash मिलाता है — ग़लत/बदली चाबी = 401। */
+    function call(body, tmo) {
       var cfg = supa.cfg();
-      if (!cfg) return Promise.reject(new Error('Supabase जुड़ा नहीं है'));
+      if (!cfg || !cfg.url || !cfg.token) { var e0 = new Error('auth'); e0.auth = true; return Promise.reject(e0); }
+      return rawCall(cfg.url, cfg.token, body, tmo);
+    }
+    function rawCall(url, token, body, tmo) {
       var ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
       var t = ctrl ? setTimer(function () { ctrl.abort(); }, tmo || TIMEOUT_MS) : null;
-      init = init || {};
-      init.headers = init.headers || {};
-      init.headers['apikey'] = cfg.anonKey;
-      if (ctrl) init.signal = ctrl.signal;
-      return fetchFn(cfg.url.replace(/\/+$/, '') + path, init).then(function (res) {
-        if (t) clearTimer(t);
-        return res;
-      }, function (e) {
-        if (t) clearTimer(t);
-        if (e && e.name === 'AbortError') throw new Error('Server ने समय पर जवाब नहीं दिया (timeout)।');
-        throw e;
-      });
-    }
-
-    function login(url, anonKey, email, password) {
-      var body = JSON.stringify({ email: email, password: password });
-      var ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
-      var t = ctrl ? setTimer(function () { ctrl.abort(); }, TIMEOUT_MS) : null;
-      return fetchFn(url.replace(/\/+$/, '') + '/auth/v1/token?grant_type=password', {
+      return fetchFn(url.replace(/\/+$/, '') + '/functions/v1/jcm-sync', {
         method: 'POST',
-        headers: { 'apikey': anonKey, 'Content-Type': 'application/json' },
-        body: body, signal: ctrl ? ctrl.signal : undefined
+        headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: ctrl ? ctrl.signal : undefined
       }).then(function (res) {
         if (t) clearTimer(t);
         return res.json().catch(function () { return {}; }).then(function (j) {
-          if (!res.ok || !j.access_token) {
-            var msg = (j && (j.msg || j.message || j.error_description)) || ('साइन-इन नहीं हुआ (HTTP ' + res.status + ')');
-            if (/invalid/i.test(msg)) msg = 'email या password ग़लत है।';
-            throw new Error(msg);
-          }
-          return { access_token: j.access_token, refresh_token: j.refresh_token, expiresAt: now().getTime() + (j.expires_in || 3600) * 1000 };
+          if (res.status === 401) { var e = new Error((j && j.error) || 'चाबी ग़लत'); e.auth = true; throw e; }
+          if (!res.ok) { var e2 = new Error((j && j.error) || ('HTTP ' + res.status)); e2.res = res; throw e2; }
+          return j;
         });
       }, function (e) {
         if (t) clearTimer(t);
         if (e && e.name === 'AbortError') throw new Error('Server ने समय पर जवाब नहीं दिया (timeout)।');
         throw e;
-      });
-    }
-
-    function refresh() {
-      var cfg = supa.cfg();
-      if (!cfg || !cfg.session || !cfg.session.refresh_token) return Promise.reject(new Error('auth'));
-      return req('/auth/v1/token?grant_type=refresh_token', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ refresh_token: cfg.session.refresh_token })
-      }).then(function (res) {
-        return res.json().catch(function () { return {}; }).then(function (j) {
-          if (!res.ok || !j.access_token) { var e = new Error('auth'); e.auth = true; throw e; }
-          cfg.session = { access_token: j.access_token, refresh_token: j.refresh_token, expiresAt: now().getTime() + (j.expires_in || 3600) * 1000 };
-          set(K_CFG, cfg);
-          return cfg.session;
-        });
-      });
-    }
-
-    // signed-in request; token पुराना पड़ा हो तो पहले/बीच में refresh
-    function authedReq(path, init) {
-      var cfg = supa.cfg();
-      if (!cfg || !cfg.session) { var e = new Error('auth'); e.auth = true; return Promise.reject(e); }
-      var fresh = cfg.session.expiresAt - now().getTime() > 60000
-        ? Promise.resolve(cfg.session) : refresh();
-      return fresh.then(function (s) {
-        init = init || {};
-        init.headers = Object.assign({}, init.headers, { 'Authorization': 'Bearer ' + s.access_token });
-        return req(path, init).then(function (res) {
-          if (res.status !== 401) return res;
-          return refresh().then(function (s2) {          // बीच में expire हुआ → एक बार और
-            init.headers['Authorization'] = 'Bearer ' + s2.access_token;
-            return req(path, init);
-          });
-        });
       });
     }
 
     function setProblem(p, text) { problem = p; problemText = text || ''; onState(); }
 
-    /* Setup की सबसे ख़तरनाक चूक: dashboard में "Allow new users to sign up"
-       बंद करना भूल गए। तब anon key हाथ लगते ही कोई भी खाता बनाकर data पढ़-लिख
-       सकता है। GoTrue के /settings से चुपचाप जाँचो और खुला मिले तो cfg में
-       निशान — ⚙ में चेतावनी दिखती रहेगी। जाँच fail हो जाए तो चुप रहो (यह
-       सुविधा है, sync की शर्त नहीं)।                                          */
-    function checkSignups() {
-      req('/auth/v1/settings', { method: 'GET' }, 8000).then(function (res) {
-        return res.ok ? res.json() : null;
-      }).then(function (j) {
-        if (!j || typeof j.disable_signup === 'undefined') return;
-        var c = supa.cfg(); if (!c) return;
-        c.signupsOpen = (j.disable_signup === false);
-        set(K_CFG, c); onState();
-      }).catch(function () { });
-    }
-
     function classify(e, res) {
-      if (e && e.auth) { setProblem('auth', 'साइन-इन की मियाद ख़त्म — चाबी (password) फिर डालो।'); return; }
+      if (e && e.auth) { setProblem('auth', 'चाबी नहीं चली (ग़लत या बदल दी गई) — नई चाबी डालो।'); return; }
       if (res && res.status >= 500) {
         setProblem('paused', 'Supabase जवाब नहीं दे रहा (HTTP ' + res.status + ') — free project हफ़्ते भर बंद रहे तो सो जाता है; dashboard खोलते ही जग जाता है।');
         return;
@@ -233,10 +169,8 @@
 
     // ---- pull: cloud → फ़ोन ----
     function pull() {
-      return authedReq('/rest/v1/jcm_kv?select=k,v,updated_at', { method: 'GET' }).then(function (res) {
-        if (!res.ok) { var e = new Error('pull HTTP ' + res.status); e.res = res; if (res.status === 401) e.auth = true; throw e; }
-        return res.json();
-      }).then(function (rows) {
+      return call({ op: 'pull' }).then(function (j) {
+        var rows = (j && j.rows) || [];
         var seen = get(K_SEEN, {});
         var dirty = get(K_DIRTY, []);
         var applied = 0;
@@ -288,24 +222,16 @@
       var p = Promise.resolve();
       if (rows.length) {
         p = p.then(function () {
-          return authedReq('/rest/v1/jcm_kv?on_conflict=k', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Prefer': 'resolution=merge-duplicates,return=representation' },
-            body: JSON.stringify(rows)
-          }).then(function (res) {
-            if (!res.ok) { var e = new Error('push HTTP ' + res.status); e.res = res; if (res.status === 401) e.auth = true; throw e; }
-            return res.json();
-          }).then(function (saved) {
+          return call({ op: 'push', rows: rows }).then(function (j) {
             var seen = get(K_SEEN, {});
-            (saved || []).forEach(function (r) { if (r && r.k) seen[r.k] = r.updated_at; });
+            ((j && j.rows) || []).forEach(function (r) { if (r && r.k) seen[r.k] = r.updated_at; });
             set(K_SEEN, seen);
           });
         });
       }
       gone.forEach(function (k) {
         p = p.then(function () {
-          return authedReq('/rest/v1/jcm_kv?k=eq.' + encodeURIComponent(k), { method: 'DELETE' }).then(function (res) {
-            if (!res.ok && res.status !== 404) { var e = new Error('delete HTTP ' + res.status); e.res = res; throw e; }
+          return call({ op: 'del', k: k }).then(function () {
             var seen = get(K_SEEN, {});
             delete seen[k]; set(K_SEEN, seen);
           });
@@ -329,38 +255,43 @@
       syncable: syncable,
 
       cfg: function () { return get(K_CFG, null); },
-      enabled: function () { var c = supa.cfg(); return !!(c && c.url && c.anonKey && c.session); },
+      enabled: function () { var c = supa.cfg(); return !!(c && c.url && c.token); },
 
-      // पहली बार जोड़ना: साइन-इन → (merge-सुरक्षित) pull → सब कुछ push
-      connect: function (url, anonKey, email, password) {
+      // पहली बार जोड़ना: चाबी को ping से परखो → save → (merge-सुरक्षित) pull → सब push
+      connect: function (url, token) {
         url = String(url || '').trim().replace(/\/+$/, '');
-        anonKey = String(anonKey || '').trim();
-        email = String(email || '').trim();
+        token = String(token || '').trim();
         var localDev = /^http:\/\/(localhost|127\.0\.0\.1)([:/]|$)/.test(url);   // सिर्फ़ जाँच के लिए
-        if (!/^https:\/\//.test(url) && !localDev) return Promise.reject(new Error('Project URL https:// से शुरू होना चाहिए — Supabase → Settings → API से copy करो।'));
-        if (!anonKey) return Promise.reject(new Error('anon key खाली है — Supabase → Settings → API → anon public।'));
-        if (!email || !password) return Promise.reject(new Error('email और password दोनों चाहिए।'));
-        return login(url, anonKey, email, password).then(function (session) {
-          set(K_CFG, { url: url, anonKey: anonKey, email: email, session: session, connectedAt: now().toISOString() });
-          checkSignups();   // भरोसा नहीं, जाँच: signups खुले रह गए तो चेतावनी
+        if (!/^https:\/\//.test(url) && !localDev) return Promise.reject(new Error('Project URL https:// से शुरू होना चाहिए।'));
+        if (!token) return Promise.reject(new Error('चाबी खाली है — वही jcm-… वाली चाबी डालो।'));
+        return rawCall(url, token, { op: 'ping' }).then(function () {
+          set(K_CFG, { url: url, token: token, connectedAt: now().toISOString() });
+          setProblem('', '');
           // इस फ़ोन का सब कुछ भेजने के लिए तैयार रखो (pull पहले merge कर लेगा)
           var d = get(K_DIRTY, []);
           allLocalKeys().forEach(function (k) { if (d.indexOf(k) < 0) d.push(k); });
           set(K_DIRTY, d);
           set(K_SEEN, {});
           return supa.syncNow();
+        }, function (e) {
+          if (e && e.auth) throw new Error('चाबी ग़लत है — वही jcm-… वाली चाबी डालो।');
+          throw e;
         });
       },
 
-      // फिर साइन-इन (token मर गया हो) — बाकी सेटिंग वही रहती है
-      relogin: function (password) {
+      // चाबी बदली/मरी हो — नई डालकर वहीं से आगे
+      relogin: function (token) {
         var c = supa.cfg();
-        if (!c) return Promise.reject(new Error('पहले Supabase जोड़ो।'));
-        return login(c.url, c.anonKey, c.email, password).then(function (session) {
-          c.session = session; set(K_CFG, c);
+        if (!c) return Promise.reject(new Error('पहले cloud backup जोड़ो।'));
+        token = String(token || '').trim();
+        if (!token) return Promise.reject(new Error('चाबी खाली है।'));
+        return rawCall(c.url, token, { op: 'ping' }).then(function () {
+          c.token = token; set(K_CFG, c);
           setProblem('', '');
-          checkSignups();
           return supa.syncNow();
+        }, function (e) {
+          if (e && e.auth) throw new Error('यह चाबी भी नहीं चली — Claude से नई चाबी बनवा लो।');
+          throw e;
         });
       },
 
@@ -400,10 +331,8 @@
         return {
           on: supa.enabled(),
           busy: syncing,
-          email: c ? c.email : '',
           url: c ? c.url : '',
           pending: get(K_DIRTY, []).length,
-          signupsOpen: !!(c && c.signupsOpen),
           lastSync: meta ? meta.lastSync : '',
           problem: problem,
           problemText: problemText
