@@ -12,7 +12,7 @@
 (function (root) {
   'use strict';
 
-  const APP_VERSION = '1.28.0';
+  const APP_VERSION = '1.29.0';
   const K = { lists: 'jcm.lists', queue: 'jcm.queue', draft: 'jcm.draft', shift: 'jcm.shift', rates: 'jcm.rates', buys: 'jcm.buys', buyLists: 'jcm.buylists' };   // (jcm.api/jcm.key पुराने Sheet के थे — अब न पढ़े जाते हैं, न मिटाए)
   const DEFAULT_SHIFT = { start: '08:30', finish: '18:30' };   // मिल का सामान्य समय; ⚙ सेटिंग से बदला जा सकता है
   // पैसे की दरें — ⚙ सेटिंग से बदली जा सकती हैं
@@ -1623,17 +1623,22 @@
                 : l.rateBy === 'lump' ? ' एकमुश्त' : '/' + esc(pk);
       const qty = wt + (nu ? ' × ' + nu + ' ' + esc(un) : '') + ' · ₹' + esc(l.rate || '0') + rbl;
       const pty = String(l.party || '').trim();
-      h += '<div class="card lrow">' +
-        '<div class="top"><b>' + esc(l.item || '(सामान नहीं चुना)') + '</b></div>' +
-        '<div class="s">' + qty + (pty ? ' · सप्लायर ' + esc(pty) : '') +
-          (l.expenses && l.expenses.length ? ' · ' + l.expenses.length + ' ख़र्च' : '') + '</div>' +
-        '<div class="res" id="lres' + i + '"></div>' +
-        '<div style="display:flex;gap:8px;margin-top:8px">' +
-          '<button class="btn ghost sm" data-editline="' + i + '" style="flex:1">✎ बदलो</button>' +
-          '<button class="btn danger sm" data-rmline="' + i + '" style="flex:1">🗑 हटाओ</button>' +
+      /* बटन नहीं — कार्ड दाएँ खिसकाओ = बदलो, बाएँ = हटाओ; छूओ तो भी बदलो।
+         नीचे-ऊपर scroll पर कोई असर नहीं (touch-action: pan-y)।              */
+      h += '<div class="lrow" data-line="' + i + '">' +
+        '<div class="lbg le">✎ बदलो</div>' +
+        '<div class="lbg ld">🗑 हटाओ</div>' +
+        '<div class="lslide">' +
+          '<div class="top"><b>' + esc(l.item || '(सामान नहीं चुना)') + '</b></div>' +
+          '<div class="s">' + qty + (pty ? ' · सप्लायर ' + esc(pty) : '') +
+            (l.expenses && l.expenses.length ? ' · ' + l.expenses.length + ' ख़र्च' : '') + '</div>' +
+          '<div class="res" id="lres' + i + '"></div>' +
         '</div>' +
       '</div>';
     });
+    if (draftBuy.lines.length) {
+      h += '<div class="hint" style="margin-top:2px">कार्ड को दाएँ खिसकाओ = ✎ बदलो, बाएँ = 🗑 हटाओ (छूने पर भी बदलो खुलता है)</div>';
+    }
     $('bLines').innerHTML = h;
     renderPartyExp();
     $('bExp').innerHTML = expRows(draftBuy.expenses, 'T');
@@ -2219,14 +2224,15 @@
     }
   }
   function onBuyClick(ev) {
-    const t = ev.target.closest ? ev.target.closest('[data-rmline],[data-editline],[data-addexp],[data-rmexp],[data-mrate],[data-mkg]') : null;
-    if (!t) return;
+    const t = ev.target.closest ? ev.target.closest('[data-addexp],[data-rmexp],[data-mrate],[data-mkg]') : null;
+    if (!t) {
+      // कार्ड को छूना = बदलो (swipe के तुरंत बाद वाला click गिनना नहीं)
+      const r = ev.target.closest ? ev.target.closest('.lrow[data-line]') : null;
+      if (r && !swMuteClick) openItemModal(parseInt(r.getAttribute('data-line'), 10));
+      return;
+    }
     const inModal = !!(t.closest && t.closest('#itemModal'));
-    if (t.hasAttribute('data-editline')) { openItemModal(parseInt(t.getAttribute('data-editline'), 10)); return; }
-    if (t.hasAttribute('data-rmline')) {
-      if (!confirm('यह सामान हटाना है?')) return;
-      draftBuy.lines.splice(parseInt(t.getAttribute('data-rmline'), 10), 1);
-    } else if (t.hasAttribute('data-addexp')) {
+    if (t.hasAttribute('data-addexp')) {
       lineExpList(t.getAttribute('data-addexp')).push({ name: '', kind: 'percent', value: '' });
     } else if (t.hasAttribute('data-rmexp')) {
       lineExpList(t.getAttribute('data-rmexp')).splice(parseInt(t.getAttribute('data-i'), 10), 1);
@@ -2237,6 +2243,52 @@
     }
     if (inModal) renderItemModal(); else renderBuyForm();
   }
+  /* ---- सामान-कार्ड पर swipe: दाएँ = बदलो, बाएँ = हटाओ ----
+     pointer events (छूना और mouse दोनों); शुरुआती 12px से तय होता है कि
+     इरादा अगल-बग़ल का है या ऊपर-नीचे scroll का।                            */
+  let sw = null, swMuteClick = false;
+  $('bLines').addEventListener('pointerdown', function (ev) {
+    const r = ev.target.closest ? ev.target.closest('.lrow[data-line]') : null;
+    if (!r) return;
+    sw = { r: r, sl: r.querySelector('.lslide'), x: ev.clientX, y: ev.clientY, dx: 0, on: false };
+  });
+  root.addEventListener('pointermove', function (ev) {
+    if (!sw) return;
+    const dx = ev.clientX - sw.x, dy = ev.clientY - sw.y;
+    if (!sw.on) {
+      if (Math.abs(dx) > 12 && Math.abs(dx) > Math.abs(dy) * 1.2) sw.on = true;
+      else if (Math.abs(dy) > 16) { sw = null; return; }   // scroll का इरादा
+      else return;
+    }
+    sw.dx = dx;
+    sw.sl.style.transition = 'none';
+    sw.sl.style.transform = 'translateX(' + dx + 'px)';
+    const le = sw.r.querySelector('.lbg.le'), ld = sw.r.querySelector('.lbg.ld');
+    if (le) le.style.opacity = dx > 0 ? '1' : '0';
+    if (ld) ld.style.opacity = dx < 0 ? '1' : '0';
+  });
+  function swEnd() {
+    if (!sw) return;
+    const s = sw; sw = null;
+    s.sl.style.transition = '';
+    s.sl.style.transform = '';
+    if (!s.on) return;
+    swMuteClick = true; setTimeout(function () { swMuteClick = false; }, 250);
+    const th = Math.min(100, s.r.offsetWidth * 0.3);
+    const i = parseInt(s.r.getAttribute('data-line'), 10);
+    if (s.dx > th) {
+      openItemModal(i);
+    } else if (s.dx < -th) {
+      if (!confirm('यह सामान हटाना है?')) return;
+      draftBuy.lines.splice(i, 1);
+      renderBuyForm();
+    }
+  }
+  root.addEventListener('pointerup', swEnd);
+  root.addEventListener('pointercancel', function () {
+    if (sw) { sw.sl.style.transition = ''; sw.sl.style.transform = ''; sw = null; }
+  });
+
   ['buyFormWrap', 'itemModal'].forEach(function (id) {
     $(id).addEventListener('input', onBuyInput);
     $(id).addEventListener('change', onBuyChange);

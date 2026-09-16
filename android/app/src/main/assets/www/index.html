@@ -89,7 +89,13 @@
     nav.tabs button { flex: 1; border: 0; background: none; padding: 8px 4px 6px; font-size: 12px; color: var(--muted); position: relative; }
     nav.tabs button .ic { display: block; font-size: 22px; line-height: 1.1; }
     nav.tabs button { font-size: 11px; }
-    .lrow { border: 1px solid var(--line); border-radius: 10px; padding: 10px; margin-bottom: 10px; background: #fafbfc; }
+    /* सामान-कार्ड: बटन नहीं, swipe — दाएँ बदलो (नीला), बाएँ हटाओ (लाल)।
+       touch-action:pan-y से ऊपर-नीचे scroll browser के पास ही रहता है। */
+    .lrow { position: relative; border-radius: 10px; margin-bottom: 10px; overflow: hidden; touch-action: pan-y; user-select: none; -webkit-user-select: none; }
+    .lrow .lbg { position: absolute; inset: 0; display: flex; align-items: center; font-weight: 800; font-size: 15px; color: #fff; border-radius: 10px; opacity: 0; }
+    .lrow .lbg.le { background: var(--blue); justify-content: flex-start; padding-left: 18px; }
+    .lrow .lbg.ld { background: var(--red); justify-content: flex-end; padding-right: 18px; }
+    .lrow .lslide { position: relative; border: 1px solid var(--line); border-radius: 10px; padding: 10px; background: #fafbfc; transition: transform .18s ease; }
     .lrow .top { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
     .lrow .top b { flex: 1; font-size: 14px; }
     .xbtn { background: #fff; color: var(--red); border: 1px solid var(--red); border-radius: 8px;
