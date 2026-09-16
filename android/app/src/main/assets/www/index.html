@@ -198,7 +198,8 @@
 
 <main>
   <!-- ================= नई entry ================= -->
-  <section id="view-entry">
+  <section id="view-entry" hidden>
+    <button class="btn ghost sm" id="entryBack" style="margin-top:0;width:auto;padding:8px 14px">← सूची</button>
     <div class="card">
       <label>दिनांक</label>
       <input type="date" id="date">
@@ -235,7 +236,8 @@
   </section>
 
   <!-- ================= सूची / sync ================= -->
-  <section id="view-list" hidden>
+  <section id="view-list">
+    <button class="btn" id="newEntryBtn" style="margin-top:0">➕ नई entry</button>
     <div class="summary" id="soloBox">
       <div><b id="nAll">0</b><span id="soloSafe">दर्ज entry — सब फ़ोन में सुरक्षित</span></div>
     </div>
@@ -288,6 +290,18 @@
           <button data-basis="value">मूल्य</button>
           <button data-basis="bags">बोरे</button>
         </div>
+      </div>
+
+      <div class="card">
+        <label style="margin-top:0">🧍 अनलोडिंग यहीं दर्ज करो (चाहो तो)</label>
+        <div class="hint" style="margin-top:0">समय और लेबर चुनो — बोरे की गिनती और छोटा/बड़ा इसी ट्रक के सामान के वज़न से अपने-आप बनेंगे (सीमा ⚙ की दरों में)। ख़ाली छोड़ोगे तो अलग से entry नहीं बनेगी।</div>
+        <div class="row2">
+          <div><label>स्टार्ट</label><input type="time" id="uStart"></div>
+          <div><label>फिनिश</label><input type="time" id="uFinish"></div>
+        </div>
+        <label>लेबर (छूकर चुनो)</label>
+        <div class="chips" id="uLabour"></div>
+        <div class="hint" id="uRes"></div>
       </div>
 
       <div class="card" id="bResult"></div>
@@ -404,7 +418,9 @@
         <div><label>₹ / छोटा बोरा</label><input type="number" id="rSmall" inputmode="decimal" min="0" step="0.5" placeholder="3"></div>
         <div><label>₹ / बड़ा बोरा</label><input type="number" id="rBig" inputmode="decimal" min="0" step="0.5" placeholder="4"></div>
       </div>
-      <div class="hint">दिहाड़ी सिर्फ़ काम के घंटों वाले हिस्से पर लगती है — ओवरटाइम में नहीं। बोरा-दर दोनों में।</div>
+      <label>छोटा/बड़ा बोरे की सीमा (kg)</label>
+      <input type="number" id="rSplit" inputmode="decimal" min="1" step="1" placeholder="40">
+      <div class="hint">दिहाड़ी सिर्फ़ काम के घंटों वाले हिस्से पर लगती है — ओवरटाइम में नहीं। बोरा-दर दोनों में। kg-सीमा: इतने kg तक का पैक "छोटा", उससे ऊपर "बड़ा" — ख़रीद से अनलोडिंग बनाते समय यही लगती है।</div>
       <button class="btn blue" id="saveRates">दरें save करो</button>
       <div class="hint" id="ratesInfo"></div>
     </div>
@@ -473,8 +489,7 @@
 </main>
 
 <nav class="tabs">
-  <button data-view="entry" class="on"><span class="ic">➕</span>नई entry</button>
-  <button data-view="list"><span class="ic">📋</span>सूची</button>
+  <button data-view="list" class="on"><span class="ic">📋</span>सूची</button>
   <button data-view="buy"><span class="ic">📦</span>खरीद</button>
   <button data-view="report"><span class="ic">📊</span>विश्लेषण</button>
   <button data-view="settings"><span class="ic">⚙</span>सेटिंग</button>

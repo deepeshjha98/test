@@ -12,11 +12,11 @@
 (function (root) {
   'use strict';
 
-  const APP_VERSION = '1.29.0';
+  const APP_VERSION = '1.30.0';
   const K = { lists: 'jcm.lists', queue: 'jcm.queue', draft: 'jcm.draft', shift: 'jcm.shift', rates: 'jcm.rates', buys: 'jcm.buys', buyLists: 'jcm.buylists' };   // (jcm.api/jcm.key पुराने Sheet के थे — अब न पढ़े जाते हैं, न मिटाए)
   const DEFAULT_SHIFT = { start: '08:30', finish: '18:30' };   // मिल का सामान्य समय; ⚙ सेटिंग से बदला जा सकता है
   // पैसे की दरें — ⚙ सेटिंग से बदली जा सकती हैं
-  const DEFAULT_RATES = { wage: 50, perSmall: 3, perBig: 3, perBag: 3 };   // ₹/मज़दूर-घंटा, और छोटे/बड़े बोरे की अपनी-अपनी दर
+  const DEFAULT_RATES = { wage: 50, perSmall: 3, perBig: 3, perBag: 3, splitKg: 40 };   // ₹/मज़दूर-घंटा, छोटे/बड़े बोरे की दर, और छोटा/बड़ा की kg-सीमा
 
   /* लोडिंग-अनलोडिंग में दो नाप के बोरे होते हैं — छोटा और बड़ा — और दोनों का
      चार्ज अलग। पुरानी entries में सिर्फ़ एक ही गिनती लिखी जाती थी; उन्हें बड़ा
@@ -621,17 +621,21 @@
         const s = isFinite(v.perSmall) ? v.perSmall : v.perBag;
         const b = isFinite(v.perBig) ? v.perBig : v.perBag;
         if (!isFinite(s) || !isFinite(b) || s < 0 || b < 0) return DEFAULT_RATES;
-        return { wage: v.wage, perSmall: s, perBig: b, perBag: b };
+        const sk = (isFinite(v.splitKg) && v.splitKg > 0) ? v.splitKg : DEFAULT_RATES.splitKg;
+        return { wage: v.wage, perSmall: s, perBig: b, perBag: b, splitKg: sk };
       },
       /* तीसरी दलील न दो तो दोनों नापों की दर एक ही मानी जाती है — यही पुराना
          तरीक़ा था, और जिन मिलों में फ़र्क़ नहीं है उनके लिए अब भी ठीक है।     */
-      setRates: function (wage, perSmall, perBig) {
+      setRates: function (wage, perSmall, perBig, splitKg) {
         if (perBig === undefined || perBig === null || perBig === '') perBig = perSmall;
         const w = Number(wage), s = Number(perSmall), b = Number(perBig);
+        const sk = (splitKg === undefined || splitKg === null || splitKg === '')
+          ? core.getRates().splitKg : Number(splitKg);
+        if (!isFinite(sk) || sk <= 0) throw new Error('छोटा/बड़ा की kg-सीमा 0 से ऊपर हो।');
         if (!isFinite(w) || w < 0) throw new Error('दिहाड़ी की दर अंक में भरो (₹ प्रति मज़दूर-घंटा)।');
         if (!isFinite(s) || s < 0) throw new Error('छोटे बोरे की दर अंक में भरो।');
         if (!isFinite(b) || b < 0) throw new Error('बड़े बोरे की दर अंक में भरो।');
-        const v = { wage: w, perSmall: s, perBig: b, perBag: b };
+        const v = { wage: w, perSmall: s, perBig: b, perBag: b, splitKg: sk };
         set(K.rates, v);
         return v;
       },
@@ -771,6 +775,55 @@
         all.sort(function (a, b2) { return String(b2.date).localeCompare(String(a.date)) || String(b2.savedAt).localeCompare(String(a.savedAt)); });
         set(K.buys, all);
         return clean;
+      },
+
+      /* ख़रीद के ट्रक से अनलोडिंग के बोरे: हर सामान के बोरे गिनो, और पैक का
+         वज़न छोटा/बड़ा तय करे — सीमा (splitKg) ⚙ की दरों में। रैंडम-वज़न वाले
+         का औसत (कुल kg ÷ बोरे); वज़न ही न लिखा हो (जैसे तेल का कार्टून) तो
+         छोटा माना जाता है — कार्टून हल्के ही होते हैं।                          */
+      unloadSplit: function (b, splitKg) {
+        const lim = (isFinite(splitKg) && splitKg > 0) ? splitKg : core.getRates().splitKg;
+        const out = { small: 0, big: 0 };
+        ((b && b.lines) || []).forEach(function (l) {
+          const n = Math.max(0, Number(l.bags) || 0);
+          if (!n) return;
+          const kg = lineWeigh(l) === 'total'
+            ? (lineKg(l) > 0 ? lineKg(l) / n : 0)
+            : (Number(l.bagKg) || 0);
+          if (kg > lim) out.big += n; else out.small += n;
+        });
+        return out;
+      },
+
+      /* ख़रीद save होते ही उसी ट्रक की अनलोडिंग-entry — समय+लेबर मिले तो बने/बदले,
+         ख़ाली कर दिए तो हटे। entry पर buyId का धागा रहता है ताकि ख़रीद दुबारा
+         खोलकर save करने पर वही entry सुधरे, दूसरी न बन जाए।                    */
+      attachUnload: function (buyId, u) {
+        const b = core.buys().find(function (x) { return x.id === buyId; });
+        if (!b) return null;
+        const q = core.queue();
+        const i = q.findIndex(function (x) { return x.buyId === buyId; });
+        const names = ((u && u.labour) || []).map(function (x) { return String(x).trim(); }).filter(Boolean);
+        const ok = u && /^\d{2}:\d{2}$/.test(u.start || '') && /^\d{2}:\d{2}$/.test(u.finish || '') && names.length;
+        if (!ok) {
+          if (i >= 0) { q.splice(i, 1); set(K.queue, q); }
+          return null;
+        }
+        const sp = core.unloadSplit(b);
+        if (!(sp.small + sp.big > 0)) return null;
+        const items = [];
+        b.lines.forEach(function (l) { const nm = String(l.item || '').trim(); if (nm && items.indexOf(nm) < 0) items.push(nm); });
+        const entry = {
+          date: b.date, type: 'अनलोडिंग',
+          goods: items.join(', ') || (b.vehicle || 'ख़रीद'),
+          start: u.start, finish: u.finish,
+          bagsSmall: sp.small, bagsBig: sp.big, bags: String(sp.small + sp.big),
+          labour: names
+        };
+        if (i >= 0) { q[i].entry = entry; }
+        else { q.unshift({ id: uuid(), buyId: buyId, entry: entry, status: 'local', createdAt: now().toISOString() }); }
+        set(K.queue, q);
+        return entry;
       },
 
       removeBuy: function (id) {
@@ -1050,7 +1103,7 @@
 
     order.forEach(function (it) {
       const e = it.entry; const d = document.createElement('div'); d.className = 'buy';
-      const st = 'फ़ोन में';
+      const st = it.buyId ? 'ख़रीद से' : 'फ़ोन में';
       const sp = core.split(e.start, e.finish);
       const bs = bagSplit(e), tot = bs.small + bs.big;
       const labMin = sp.total * e.labour.length;     // कुल मज़दूर-मिनट = घड़ी का समय × लेबर
@@ -1140,7 +1193,8 @@
     view = v;
     ['entry', 'list', 'buy', 'report', 'settings'].forEach(function (x) { $('view-' + x).hidden = (x !== v); });
     const tabs = document.querySelectorAll('nav.tabs button');
-    tabs.forEach(function (b) { b.className = b.getAttribute('data-view') === v ? 'on' : ''; });
+    const tabV = (v === 'entry') ? 'list' : v;   // नई entry अब सूची के अंदर से खुलती है
+    tabs.forEach(function (b) { b.className = b.getAttribute('data-view') === tabV ? 'on' : ''; });
     if (v === 'list') renderList();
     if (v === 'report') renderReport();
     if (v === 'buy') { if (!draftBuy) { showBuyForm(false); renderBuyList(); } }
@@ -1573,9 +1627,50 @@
   function newLine() { return { item: '', party: '', kind: 'fixed', rateBy: 'bag', units: '', bags: '', bagKg: '', totalKg: '', rate: '', expenses: [] }; }
   function blankBuy() {
     // सामान शुरू में एक भी नहीं — "➕ सामान जोड़ो" से popup खुलेगा
-    return { date: todayLocal(), vehicle: '', party: '', multiParty: false, basis: 'weight', lines: [], expenses: [], partyExpenses: {} };
+    return { date: todayLocal(), vehicle: '', party: '', multiParty: false, basis: 'weight', lines: [], expenses: [], partyExpenses: {}, unload: { start: '', finish: '', labour: [] } };
   }
   function lineParty(l) { return String((l && l.party) || '').trim() || String((draftBuy && draftBuy.party) || '').trim(); }
+
+  /* ---- ट्रक से ही अनलोडिंग: समय + लेबर चुनो, बोरे सामान से अपने-आप ---- */
+  function renderUnload() {
+    if (!draftBuy.unload) draftBuy.unload = { start: '', finish: '', labour: [] };
+    const u = draftBuy.unload;
+    $('uStart').value = u.start || '';
+    $('uFinish').value = u.finish || '';
+    const d = core.lists();
+    const names = (d && d.labour) || [];
+    const el = $('uLabour'); el.innerHTML = '';
+    if (!names.length) {
+      el.innerHTML = '<div class="hint" style="margin:0">लेबर के नाम ⚙ सेटिंग → "लोकल लिस्ट" में भरो, फिर यहाँ चुन पाओगे।</div>';
+    } else {
+      names.forEach(function (nm) {
+        const c = document.createElement('div');
+        c.className = u.labour.indexOf(nm) >= 0 ? 'chip on' : 'chip';
+        c.textContent = nm;
+        c.onclick = function () {
+          const i = u.labour.indexOf(nm);
+          if (i >= 0) u.labour.splice(i, 1); else u.labour.push(nm);
+          buzz(15); renderUnload();
+        };
+        el.appendChild(c);
+      });
+    }
+    renderURes();
+  }
+  function renderURes() {
+    const u = draftBuy.unload;
+    const sp = core.unloadSplit(draftBuy);
+    const tot = sp.small + sp.big;
+    if (!tot) { $('uRes').textContent = ''; return; }
+    if (!/^\d{2}:\d{2}$/.test(u.start || '') || !/^\d{2}:\d{2}$/.test(u.finish || '') || !u.labour.length) {
+      $('uRes').textContent = 'इस ट्रक में ' + sp.small + ' छोटे + ' + sp.big + ' बड़े बोरे — समय और लेबर चुनते ही अनलोडिंग की entry अपने-आप बनेगी।';
+      return;
+    }
+    const I = core.incentive(u.start, u.finish, { bagsSmall: sp.small, bagsBig: sp.big }, u.labour.length);
+    $('uRes').textContent = sp.small + ' छोटे + ' + sp.big + ' बड़े बोरे · लेबर ' + u.labour.length +
+      ' · इंसेंटिव ₹' + Math.round(I.total) +
+      (I.split.work > 0 ? ' · दिहाड़ी ₹' + Math.round(I.wage) + ' · काटकर ' + (I.net < 0 ? '−' : '+') + '₹' + Math.abs(I.net).toFixed(0) : ' · पूरा ओवरटाइम — दिहाड़ी नहीं');
+  }
 
   function optsHtml(list, sel) {
     let h = '<option value="">-- चुनो --</option>';
@@ -1640,6 +1735,7 @@
       h += '<div class="hint" style="margin-top:2px">कार्ड को दाएँ खिसकाओ = ✎ बदलो, बाएँ = 🗑 हटाओ (छूने पर भी बदलो खुलता है)</div>';
     }
     $('bLines').innerHTML = h;
+    renderUnload();
     renderPartyExp();
     $('bExp').innerHTML = expRows(draftBuy.expenses, 'T');
     document.querySelectorAll('#bBasis button').forEach(function (b) {
@@ -1784,6 +1880,7 @@
   }
 
   function recalcBuy() {
+    try { renderURes(); } catch (_) { }   // सामान बदले तो अनलोडिंग के बोरे भी बदलते हैं
     const r = core.calcBuy(draftBuy);
     r.lines.forEach(function (x, i) {
       const el = $('lres' + i);
@@ -2142,6 +2239,20 @@
   $('checkUpdate').onclick = function () { checkUpdate(true); };
 
   // ---- खरीद के बटन
+  ['uStart', 'uFinish'].forEach(function (id) {
+    ['input', 'change'].forEach(function (evn) {
+      $(id).addEventListener(evn, function () {
+        if (!draftBuy) return;
+        if (!draftBuy.unload) draftBuy.unload = { start: '', finish: '', labour: [] };
+        draftBuy.unload[id === 'uStart' ? 'start' : 'finish'] = this.value;
+        renderURes();
+      });
+    });
+  });
+
+  $('newEntryBtn').onclick = function () { showView('entry'); window.scrollTo(0, 0); };
+  $('entryBack').onclick = function () { showView('list'); };
+
   $('newBuy').onclick = function () { draftBuy = blankBuy(); renderBuyForm(); showBuyForm(true); window.scrollTo(0, 0); };
   $('cancelBuy').onclick = function () { closeItemModal(); draftBuy = null; showBuyForm(false); renderBuyList(); };
   $('addLine').onclick = function () { openItemModal(-1); };
@@ -2298,9 +2409,10 @@
   $('saveBuy').onclick = function () {
     try {
       closeItemModal();
-      core.saveBuy(draftBuy);
+      const saved = core.saveBuy(draftBuy);
+      const ue = core.attachUnload(saved.id, draftBuy.unload);
       draftBuy = null; showBuyForm(false); renderBuyList();
-      toast('✔ खरीद save हो गई', 'ok');
+      toast(ue ? '✔ खरीद save + अनलोडिंग entry बन गई (सूची में देखो)' : '✔ खरीद save हो गई', 'ok', ue ? 3500 : 2500);
     } catch (e) { toast(e.message, 'err', 4000); }
   };
 
@@ -2314,6 +2426,11 @@
       const b = core.buys().find(function (x) { return x.id === t.getAttribute('data-editbuy'); });
       if (!b) return;
       draftBuy = normalizeBuyParty(JSON.parse(JSON.stringify(b)));
+      // इस ख़रीद से बनी अनलोडिंग-entry हो तो उसका समय/लेबर भी वापस भरो
+      const le = core.queue().find(function (x) { return x.buyId === b.id; });
+      draftBuy.unload = le
+        ? { start: le.entry.start, finish: le.entry.finish, labour: (le.entry.labour || []).slice() }
+        : { start: '', finish: '', labour: [] };
       renderBuyForm(); showBuyForm(true); window.scrollTo(0, 0);
     }
   });
@@ -2349,13 +2466,13 @@
   }
   function ratesInfo() {
     const r = core.getRates();
-    $('rWage').value = r.wage; $('rSmall').value = r.perSmall; $('rBig').value = r.perBig;
+    $('rWage').value = r.wage; $('rSmall').value = r.perSmall; $('rBig').value = r.perBig; $('rSplit').value = r.splitKg;
     $('ratesInfo').textContent = 'अभी: ₹' + r.wage + '/मज़दूर-घंटा दिहाड़ी · ₹' + r.perSmall + '/छोटा बोरा · ₹' + r.perBig + '/बड़ा बोरा' +
       (r.perSmall === r.perBig ? '' : ' — इससे पहले की entries बड़े बोरे में गिनी जाती हैं।');
   }
   $('saveRates').onclick = function () {
     try {
-      core.setRates($('rWage').value, $('rSmall').value, $('rBig').value);
+      core.setRates($('rWage').value, $('rSmall').value, $('rBig').value, $('rSplit').value);
       ratesInfo();
       toast('✔ दरें save हुईं', 'ok');
     } catch (e) { toast(e.message, 'err', 4000); }
