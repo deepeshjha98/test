@@ -1,17 +1,19 @@
 /* JCM लोडिंग-अनलोडिंग PWA — app.js
    Structure:
-     createCore()  → pure logic (settings, lists cache, offline queue, sync). कोई DOM नहीं → node में test होता है।
+     createCore()  → pure logic (lists, entries, हिसाब)। कोई DOM नहीं → node में test होता है।
      UI section    → DOM wiring (सिर्फ browser में चलता है)।
    Data guarantee:
-     - हर entry को device पर unique id (uuid) मिलती है और वह localStorage queue में तुरंत save होती है।
-     - Sync सिर्फ status बदलता है: pending → sent (server ने row confirm की) / failed (server ने reject किया)।
-     - Network error → entry pending ही रहती है, बाद में फिर कोशिश। Server उसी id पर दुबारा row नहीं बनाता (dedup)।
+     - हर entry को unique id (uuid) मिलती है और वह फ़ोन के local database (db.js)
+       में तुरंत save होती है — internet का इंतज़ार कभी नहीं।
+     - Cloud backup (supa.js) अलग परत है: हर बदलाव अपने-आप Supabase endpoint
+       तक भी जाता है; वह न चले तो भी app पूरी चलती रहती है।
+     - (Google Sheet वाला पुराना रास्ता हटाया जा चुका है — v1.27.0)
 */
 (function (root) {
   'use strict';
 
-  const APP_VERSION = '1.26.0';
-  const K = { api: 'jcm.api', key: 'jcm.key', lists: 'jcm.lists', queue: 'jcm.queue', draft: 'jcm.draft', shift: 'jcm.shift', rates: 'jcm.rates', buys: 'jcm.buys', buyLists: 'jcm.buylists' };
+  const APP_VERSION = '1.27.0';
+  const K = { lists: 'jcm.lists', queue: 'jcm.queue', draft: 'jcm.draft', shift: 'jcm.shift', rates: 'jcm.rates', buys: 'jcm.buys', buyLists: 'jcm.buylists' };   // (jcm.api/jcm.key पुराने Sheet के थे — अब न पढ़े जाते हैं, न मिटाए)
   const DEFAULT_SHIFT = { start: '08:30', finish: '18:30' };   // मिल का सामान्य समय; ⚙ सेटिंग से बदला जा सकता है
   // पैसे की दरें — ⚙ सेटिंग से बदली जा सकती हैं
   const DEFAULT_RATES = { wage: 50, perSmall: 3, perBig: 3, perBag: 3 };   // ₹/मज़दूर-घंटा, और छोटे/बड़े बोरे की अपनी-अपनी दर
@@ -29,8 +31,6 @@
   }
   function bagTotal(e) { const x = bagSplit(e); return x.small + x.big; }
   function bagPay(x, rates) { return x.small * rates.perSmall + x.big * rates.perBig; }
-  const MAX_SENT_HISTORY = 300;
-  const REQUEST_TIMEOUT_MS = 25000;
 
   function uuid() {
     if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
@@ -100,9 +100,6 @@
       seen[t] = 1; out.push(t);
     });
     return out;
-  }
-  function statusText(it) {
-    return it.status === 'sent' ? 'Sheet में गई' : it.status === 'failed' ? 'अटकी' : 'फ़ोन में';
   }
 
   /* release के JSON से यह तय करना कि नई build है या नहीं।
@@ -427,84 +424,16 @@
 
   function createCore(opts) {
     const storage = opts.storage;
-    const fetchFn = opts.fetchFn;
     const now = opts.now || function () { return new Date(); };
     const get = function (k, d) { try { const v = storage.getItem(k); return v == null ? d : JSON.parse(v); } catch (_) { return d; } };
     const set = function (k, v) { storage.setItem(k, JSON.stringify(v)); };
-    let syncing = false;
-
-    /* भेजी हुई entries की एक हद तक ही नक़ल रखी जाती है — पर यह तभी सुरक्षित है
-       जब Sheet में असली रिकॉर्ड मौजूद हो। सिर्फ़-फ़ोन वाले मोड में फ़ोन ही इकलौता
-       रिकॉर्ड है, इसलिए वहाँ कुछ भी अपने-आप नहीं मिटता।                        */
-    function prune(q) {
-      if (core.localOnly()) return;
-      let sent = 0;
-      for (let i = 0; i < q.length; i++) {
-        if (q[i].status !== 'sent') continue;
-        sent++;
-        if (sent > MAX_SENT_HISTORY) { q.splice(i, 1); i--; }
-      }
-    }
 
     const core = {
       version: APP_VERSION,
-      getApi: function () { return get(K.api, ''); },
-      setApi: function (u) { set(K.api, String(u || '').trim()); },
-      getKey: function () { return get(K.key, ''); },
-      setKey: function (k) { set(K.key, String(k || '').trim()); },
-      /* Google Sheet बंद — URL और key हटते ही app सिर्फ़ फ़ोन पर चलती है।
-         entries कहीं नहीं जातीं, पर जो पहले जा चुकी हैं वे Sheet में पड़ी रहती हैं
-         (यहाँ से कुछ मिटाया नहीं जाता)। दुबारा URL डालते ही सब लौट आता है।     */
-      disableSheet: function () {
-        set(K.api, ''); set(K.key, '');
-        return true;
-      },
       lists: function () { return get(K.lists, null); },
       queue: function () { return get(K.queue, []); },
-      pending: function () { return core.queue().filter(function (i) { return i.status === 'pending'; }); },
-      failed: function () { return core.queue().filter(function (i) { return i.status === 'failed'; }); },
-      sent: function () { return core.queue().filter(function (i) { return i.status === 'sent'; }); },
       getDraft: function () { return get(K.draft, null); },
       setDraft: function (d) { if (d) set(K.draft, d); else storage.removeItem(K.draft); },
-      isSyncing: function () { return syncing; },
-
-      // Apps Script web app को POST (text/plain body = JSON → कोई CORS preflight नहीं)
-      request: async function (body, timeoutMs) {
-        const api = core.getApi();
-        if (!api) throw new Error('API URL set नहीं है — ⚙ सेटिंग में Web App URL डालो।');
-        const payload = Object.assign({ key: core.getKey(), appVersion: APP_VERSION }, body);
-        const ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
-        const timer = ctrl ? setTimeout(function () { ctrl.abort(); }, timeoutMs || REQUEST_TIMEOUT_MS) : null;
-        try {
-          const res = await fetchFn(api, {
-            method: 'POST',
-            headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-            body: JSON.stringify(payload),
-            redirect: 'follow',
-            signal: ctrl ? ctrl.signal : undefined
-          });
-          const text = await res.text();
-          try { return JSON.parse(text); }
-          catch (_) { throw new Error('Server से JSON नहीं मिला — API URL और web app का "Anyone" access check करो।'); }
-        } catch (e) {
-          if (e && e.name === 'AbortError') throw new Error('Server ने समय पर जवाब नहीं दिया (timeout)।');
-          throw e;
-        } finally { if (timer) clearTimeout(timer); }
-      },
-
-      ping: async function () {
-        const r = await core.request({ action: 'ping' }, 15000);
-        if (!r || !r.ok) throw new Error((r && r.error) || 'ping fail');
-        return r;
-      },
-
-      refreshLists: async function () {
-        const r = await core.request({ action: 'lists' });
-        if (!r || !r.ok) throw new Error((r && r.error) || 'लिस्ट नहीं मिली');
-        const l = { labour: r.labour || [], goods: r.goods || [], types: r.types || [], fetchedAt: now().toISOString() };
-        set(K.lists, l);
-        return l;
-      },
 
       // entry → queue (यहीं से data "सुरक्षित" है, भले network न हो)
       enqueue: function (entry) {
@@ -513,64 +442,21 @@
         const clean = {
           date: entry.date, type: entry.type, goods: entry.goods, start: entry.start, finish: entry.finish,
           bagsSmall: bagSplit(entry).small, bagsBig: bagSplit(entry).big,
-          bags: String(bagTotal(entry)),     // कुल — Sheet, CSV और रिपोर्ट इसी को पढ़ते हैं
+          bags: String(bagTotal(entry)),     // कुल — CSV और रिपोर्ट इसी को पढ़ते हैं
           labour: entry.labour.slice()
         };
         const q = core.queue();
-        const item = { id: uuid(), entry: clean, status: 'pending', createdAt: now().toISOString(), attempts: 0, error: '', result: null };
+        const item = { id: uuid(), entry: clean, status: 'local', createdAt: now().toISOString() };
         q.unshift(item);
-        prune(q);
         set(K.queue, q);
         return item;
       },
 
-      // pending entries को पुरानी → नई क्रम में भेजो। network error पर रुक जाओ (बाद में फिर)।
-      sync: async function () {
-        if (syncing) return { busy: true, sent: 0, failed: 0, pending: core.pending().length, error: '' };
-        syncing = true;
-        const out = { busy: false, sent: 0, failed: 0, pending: 0, error: '' };
-        try {
-          const q = core.queue();
-          const pend = q.filter(function (i) { return i.status === 'pending'; }).reverse();
-          for (let i = 0; i < pend.length; i++) {
-            const it = pend[i];
-            let r;
-            try {
-              r = await core.request({ action: 'save', clientId: it.id, createdAt: it.createdAt, entry: it.entry });
-            } catch (e) {
-              it.attempts = (it.attempts || 0) + 1; it.error = e.message; it.lastTry = now().toISOString();
-              set(K.queue, q); out.error = e.message; break;
-            }
-            it.lastTry = now().toISOString();
-            if (r && r.ok) {
-              it.status = 'sent'; it.error = '';
-              it.result = { row: r.row, serial: r.serial, duplicate: !!r.duplicate }; it.sentAt = now().toISOString();
-              out.sent++;
-            } else {
-              it.status = 'failed'; it.error = (r && r.error) || 'Server ने reject किया'; out.failed++;
-            }
-            set(K.queue, q);
-          }
-          out.pending = core.pending().length;
-          return out;
-        } finally { syncing = false; }
-      },
-
-      retry: function (id) {
-        const q = core.queue(); const it = q.find(function (x) { return x.id === id; });
-        if (!it || it.status !== 'failed') return false;
-        it.status = 'pending'; it.error = ''; set(K.queue, q); return true;
-      },
-      /* पहले "भेजी हुई" entry फ़ोन से हटती ही नहीं थी (सोच यह थी कि Sheet ही सच है)।
-         नतीजा — गलती सुधारने का कोई रास्ता नहीं बचता था, और Sheet बंद करने पर तो
-         वह entry हमेशा के लिए जमकर बैठ जाती। अब हर entry हटाई जा सकती है; Sheet
-         की row वहीं रहती है और UI उसी की चेतावनी देता है।                       */
       remove: function (id) {
         const q = core.queue(); const i = q.findIndex(function (x) { return x.id === id; });
         if (i < 0) return false;
         q.splice(i, 1); set(K.queue, q); return true;
       },
-      clearSent: function () { set(K.queue, core.queue().filter(function (i) { return i.status !== 'sent'; })); },
 
       // ---------- शिफ्ट का समय + काम/ओवरटाइम की रिपोर्ट ----------
       getShift: function () {
@@ -952,7 +838,6 @@
 
       // ---------- सिर्फ़-फ़ोन (offline) मोड ----------
       // कोई Web App URL सेट नहीं = app पूरी तरह local database पर चलती है।
-      localOnly: function () { return !core.getApi(); },
 
       // लेबर/सामान/कार्य प्रकार खुद भरो — Sheet या internet की ज़रूरत नहीं
       setLocalLists: function (l) {
@@ -967,13 +852,13 @@
         return clean;
       },
 
-      // सारी entries CSV में — Excel/Sheet में paste या WhatsApp पर भेजने के लिए
+      // सारी entries CSV में — Excel में paste या WhatsApp पर भेजने के लिए
       toCSV: function () {
         const sh = core.getShift();
         const head = ['क्रम', 'दिनांक', 'कार्य प्रकार', 'सामान', 'स्टार्ट', 'फिनिश', 'कुल समय',
                       'काम के घंटे', 'ओवरटाइम', 'छोटा बोरा', 'बड़ा बोरा', 'कुल बोरा',
                       'लेबर संख्या', 'लेबर', 'लेबर-घंटे (काम)', 'लेबर-घंटे (OT)',
-                      'स्थिति', 'बनाई गई', 'Sheet row'];
+                      'बनाई गई'];
         const rows = core.queue().slice().reverse().map(function (it, i) {
           const e = it.entry;
           const sp = splitShift(e.start, e.finish, sh);
@@ -981,8 +866,7 @@
           return [i + 1, e.date, e.type, e.goods, e.start, e.finish, hhmm(sp.total),
                   hhmm(sp.work), hhmm(sp.ot), bagSplit(e).small, bagSplit(e).big, bagTotal(e),
                   n, e.labour.join(', '), hhmm(sp.work * n), hhmm(sp.ot * n),
-                  statusText(it), it.createdAt,
-                  (it.result && it.result.serial != null) ? it.result.serial : ''];
+                  it.createdAt];
         });
         return [head].concat(rows).map(function (r) {
           return r.map(function (c) {
@@ -1067,7 +951,7 @@
     const gEl = $('goods'); const keepG = gEl.value; gEl.innerHTML = '<option value="">-- चुनो --</option>';
     const lEl = $('labour'); lEl.innerHTML = '';
     if (!d) {
-      $('labourHint').textContent = 'लिस्ट अभी खाली है — ⚙ सेटिंग → "लोकल लिस्ट" में नाम खुद भर दो (internet की ज़रूरत नहीं), या Web App URL डालकर Sheet से मँगा लो।';
+      $('labourHint').textContent = 'लिस्ट अभी खाली है — ⚙ सेटिंग → "लोकल लिस्ट" में नाम भर दो (internet की ज़रूरत नहीं)।';
       return;
     }
     d.types.forEach(function (name) {
@@ -1150,32 +1034,15 @@
   // ---- queue / list view
   function renderList() {
     const q = core.queue();
-    const nP = q.filter(function (i) { return i.status === 'pending'; }).length;
-    const nF = q.filter(function (i) { return i.status === 'failed'; }).length;
-    const nS = q.length - nP - nF;
-    const solo = core.localOnly();
-    $('syncBtn').hidden = solo;
-    // सिर्फ़-फ़ोन मोड में "बाकी/अटकी/Sheet में गईं" का कोई मतलब नहीं — बस कुल गिनती
-    $('countsBox').hidden = solo;
-    $('soloBox').hidden = !solo;
-    if (solo) {
-      $('nAll').textContent = q.length;
-      $('soloSafe').textContent = (supa && supa.enabled())
-        ? 'दर्ज entry — फ़ोन + cloud दोनों में सुरक्षित'
-        : 'दर्ज entry — सब फ़ोन में सुरक्षित';
-    }
-    $('lblPending').textContent = 'बाकी (pending)';
-    $('nPending').textContent = nP; $('nFailed').textContent = nF; $('nSent').textContent = nS;
-    $('badge').textContent = solo ? '' : ((nP + nF) ? String(nP + nF) : '');
+    $('nAll').textContent = q.length;
+    $('soloSafe').textContent = (supa && supa.enabled())
+      ? 'दर्ज entry — फ़ोन + cloud दोनों में सुरक्षित'
+      : 'दर्ज entry — सब फ़ोन में सुरक्षित';
     const box = $('items'); box.innerHTML = '';
     if (!q.length) { box.innerHTML = '<div class="empty">अभी कोई entry नहीं।</div>'; return; }
 
-    /* क्रम: पहले वे जो अभी Sheet में नहीं गईं (उन पर काम बाक़ी है), फिर भेजी हुई —
-       दोनों में नई तारीख़ ऊपर। पहले सिर्फ़ जोड़ने का क्रम था, इसलिए पुरानी तारीख़
-       की entry बाद में भरने पर सबसे ऊपर आ जाती और सूची बेतरतीब दिखती।        */
+    // क्रम: नई तारीख़ ऊपर; एक ही तारीख़ में बाद वाली पहले
     const order = q.slice().sort(function (a, b) {
-      const ua = a.status === 'sent' ? 1 : 0, ub = b.status === 'sent' ? 1 : 0;
-      if (ua !== ub) return ua - ub;
       const da = String(a.entry.date || ''), db = String(b.entry.date || '');
       if (da !== db) return db.localeCompare(da);
       return String(b.createdAt || '').localeCompare(String(a.createdAt || ''));
@@ -1183,11 +1050,7 @@
 
     order.forEach(function (it) {
       const e = it.entry; const d = document.createElement('div'); d.className = 'buy';
-      // सिर्फ़-फ़ोन मोड में Sheet का कोई ज़िक्र नहीं — वह अब मतलब ही नहीं रखता
-      const st = solo ? 'फ़ोन में'
-               : it.status === 'pending' ? 'बाकी'
-               : it.status === 'sent' ? ('Sheet row ' + (it.result && it.result.serial != null ? it.result.serial : '?'))
-               : 'अटकी';
+      const st = 'फ़ोन में';
       const sp = core.split(e.start, e.finish);
       const bs = bagSplit(e), tot = bs.small + bs.big;
       const labMin = sp.total * e.labour.length;     // कुल मज़दूर-मिनट = घड़ी का समय × लेबर
@@ -1236,31 +1099,16 @@
           : '<div class="s">' + esc(names) + '</div>') +
         (it.error ? '<div class="e">' + esc(it.error) + '</div>' : '');
 
-      /* Edit और हटाओ हर entry पर — पहले "Sheet में जा चुकी" entries पर ये छिपे थे,
-         जिससे गलती सुधारने का कोई रास्ता ही नहीं बचता था। जो सचमुच Sheet में जा
-         चुकी है उस पर चेतावनी दी जाती है कि वहाँ की row अपने-आप नहीं बदलेगी।   */
       const wrap = document.createElement('div');
-      if (it.status === 'failed') {
-        const b = document.createElement('button'); b.className = 'btn blue sm'; b.textContent = '↻ फिर भेजो';
-        b.onclick = function () { core.retry(it.id); renderList(); doSync(true); }; wrap.appendChild(b);
-      }
-      const inSheet = it.status === 'sent' && !core.localOnly();
-      const rowNo = it.result && it.result.serial != null ? it.result.serial : '?';
       const ed = document.createElement('button'); ed.className = 'btn ghost sm'; ed.textContent = '✎ Edit';
       ed.onclick = function () {
-        const warn = inSheet
-          ? 'यह entry form में लौटेगी। Sheet की row ' + rowNo + ' अपने-आप नहीं बदलेगी — उसे वहाँ ख़ुद ठीक करना होगा। ठीक?'
-          : 'यह entry form में लौटेगी और सूची से हटेगी। ठीक?';
-        if (!confirm(warn)) return;
+        if (!confirm('यह entry form में लौटेगी और सूची से हटेगी। ठीक?')) return;
         core.remove(it.id); loadEntry(e); showView('entry'); renderList();
       };
       wrap.appendChild(ed);
       const rm = document.createElement('button'); rm.className = 'btn danger sm'; rm.textContent = '🗑 हटाओ';
       rm.onclick = function () {
-        const warn = inSheet
-          ? 'फ़ोन से हट जाएगी। Sheet की row ' + rowNo + ' वहीं रहेगी — उसे ख़ुद हटाना होगा। पक्का?'
-          : 'पक्का हटाना है?';
-        if (!confirm(warn)) return;
+        if (!confirm('पक्का हटाना है?')) return;
         core.remove(it.id); renderList();
       };
       wrap.appendChild(rm);
@@ -1270,31 +1118,21 @@
   }
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
 
+  // "अभी sync" = cloud (Supabase) से मिलाओ; cloud जुड़ा न हो तो बस याद दिलाओ
   async function doSync(quiet) {
-    if (core.localOnly()) {   // कोई Web App URL नहीं → Sheet में भेजने को कुछ नहीं
-      renderList();
-      if (supa && supa.enabled()) {
-        if (!quiet) toast('☁️ cloud से मिला रहा है…', 'ok', 2000);
-        supa.syncNow().then(function (r) {
-          if (!quiet) {
-            if (r && r.error) toast(supa.state().problemText || r.error, 'err', 4500);
-            else toast('☁️ हो गया — सब cloud में सुरक्षित', 'ok');
-          }
-        });
-      } else if (!quiet) toast('यह app अभी सिर्फ़ फ़ोन पर चल रही है — entries यहीं सुरक्षित हैं।');
-      return;
+    renderList();
+    if (supa && supa.enabled()) {
+      if (!quiet) toast('☁️ cloud से मिला रहा है…', 'ok', 2000);
+      supa.syncNow().then(function (r) {
+        renderList();
+        if (!quiet) {
+          if (r && r.error) toast(supa.state().problemText || r.error, 'err', 4500);
+          else toast('☁️ हो गया — सब cloud में सुरक्षित', 'ok');
+        }
+      });
+    } else if (!quiet) {
+      toast('Cloud backup जुड़ा नहीं है — ⚙ सेटिंग में चाबी डालो। entries फ़ोन में सुरक्षित हैं।');
     }
-    if (!core.pending().length) { renderList(); if (!quiet) toast('भेजने को कुछ बाकी नहीं।'); return; }
-    if (!online()) { if (!quiet) toast('Offline हो — network आते ही अपने-आप भेजेगा।', 'err'); return; }
-    const btn = $('syncBtn'); btn.disabled = true; btn.textContent = '☁ भेज रहा है…';
-    try {
-      const r = await core.sync();
-      renderList();
-      if (r.busy) return;
-      if (r.sent) { buzz([30, 40, 30]); toast('☁ ' + r.sent + ' entry Sheet में गई' + (r.pending ? ', ' + r.pending + ' बाकी' : ''), 'ok'); }
-      if (r.failed) toast('✖ ' + r.failed + ' entry server ने reject की — सूची में देखो', 'err', 4000);
-      if (r.error && !r.sent) toast('Sync नहीं हुआ: ' + r.error, 'err', 4000);
-    } finally { btn.disabled = false; btn.textContent = '☁ अभी sync करो'; }
   }
 
   // ---- views
@@ -1307,8 +1145,7 @@
     if (v === 'report') renderReport();
     if (v === 'buy') { if (!draftBuy) { showBuyForm(false); renderBuyList(); } }
     if (v === 'settings') {
-      $('api').value = core.getApi(); $('key').value = core.getKey();
-      shiftInfo(); ratesInfo(); fillLocalLists(); listsInfo(); dbInfo(); sheetState(); supaState();
+      shiftInfo(); ratesInfo(); fillLocalLists(); listsInfo(); dbInfo(); supaState();
       const bl = core.buyLists();
       draftItems = bl.items.map(itemToDraft);
       renderItemList();
@@ -1321,7 +1158,7 @@
     const l = core.lists();
     $('listsInfo').textContent = l
       ? (l.labour.length + ' लेबर, ' + l.goods.length + ' सामान, ' + l.types.length + ' कार्य प्रकार · ' +
-         (l.source === 'local' ? 'फ़ोन में भरी हुई' : 'Sheet से आई') + ' · ' + new Date(l.fetchedAt).toLocaleString('hi-IN'))
+         'फ़ोन में भरी हुई · ' + new Date(l.fetchedAt).toLocaleString('hi-IN'))
       : 'लिस्ट अभी खाली है।';
     $('ver').textContent = APP_VERSION;
   }
@@ -2149,11 +1986,9 @@
 
   // ---- मोड के हिसाब से hint
   function modeHints() {
-    $('saveHint').textContent = !core.localOnly()
-      ? 'Save होते ही entry phone में सुरक्षित; network मिलते ही Google Sheet में जाती है।'
-      : (supa && supa.enabled())
-        ? 'Save होते ही entry फ़ोन में सुरक्षित, और अपने-आप cloud (Supabase) में भी।'
-        : 'Save होते ही entry फ़ोन के local database में सुरक्षित। (⚙ में cloud backup जोड़ोगे तो cloud में भी रहेगी।)';
+    $('saveHint').textContent = (supa && supa.enabled())
+      ? 'Save होते ही entry फ़ोन में सुरक्षित, और अपने-आप cloud में भी।'
+      : 'Save होते ही entry फ़ोन के local database में सुरक्षित। (⚙ में cloud backup जोड़ोगे तो cloud में भी रहेगी।)';
   }
 
   // ---- database की हालत (सेटिंग में)
@@ -2203,38 +2038,17 @@
       const it = core.enqueue(e);
       buzz(40); resetForm(true); renderList();
       toast('✔ Entry save हुई (' + it.entry.labour.length + ' लेबर)' +
-        (core.localOnly() ? (supa && supa.enabled() ? ' — फ़ोन + cloud में सुरक्षित' : ' — फ़ोन में सुरक्षित') : online() ? ' — Sheet में भेज रहा है…' : ' — offline, बाद में जाएगी'), 'ok');
-      if (!core.localOnly() && online()) {
-        const r = await core.sync(); renderList();
-        if (r.sent) toast('☁ Sheet में row ' + (core.sent()[0] && core.sent()[0].result ? core.sent()[0].result.serial : '') + ' बन गई', 'ok');
-        else if (r.failed) toast('✖ Server ने reject किया — सूची में देखो', 'err', 4000);
-        else if (r.error) toast('Phone में सुरक्षित है; Sheet में बाद में जाएगी (' + r.error + ')', 'err', 4000);
-      }
+        (supa && supa.enabled() ? ' — फ़ोन + cloud में सुरक्षित' : ' — फ़ोन में सुरक्षित'), 'ok');
     } catch (ex) { toast(ex.message, 'err'); }
     finally { btn.disabled = false; }
   };
 
   $('syncBtn').onclick = function () { doSync(false); };
-  $('refreshLists').onclick = async function () {
-    try { await core.refreshLists(); renderLists(); listsInfo(); toast('लिस्ट refresh हो गई', 'ok'); }
-    catch (e) { toast(e.message, 'err', 4000); }
-  };
-  function sheetState() {
-    const on = !core.localOnly();
-    $('offSheet').hidden = !on;
-    $('sheetState').textContent = on
-      ? 'अभी entries Google Sheet में भी जाती हैं।'
-      : 'अभी सब कुछ सिर्फ़ फ़ोन में है — कहीं नहीं जाता, कुछ अपने-आप मिटता भी नहीं। ' +
-        'दुबारा चालू करना हो तो ऊपर Web App URL डालकर save कर दो।';
-  }
   // ---- Supabase cloud backup (सेटिंग कार्ड) ----
   function hostOf(u) { try { return new URL(u).host; } catch (_) { return ''; } }
   function supaState() {
     if (!supa) return;
     const st = supa.state();
-    /* config.js में project पहले से भरा है (APK के साथ आता है) — तो URL/key के
-       खाने भरकर छिपा दो; user के लिए बस email+password बचे। user ने अपना कुछ
-       टाइप कर रखा हो तो उसे कभी मत कुचलो।                                     */
     /* URL config.js में भरा आता है (APK के साथ) → वह खाना छिपा; user के
        सामने बस चाबी। कोई email/password नहीं — app सिर्फ़ अपना endpoint
        बुलाती है और चाबी server पर जाँची जाती है।                              */
@@ -2302,29 +2116,6 @@
     };
   }
 
-  $('saveSettings').onclick = function () {
-    core.setApi($('api').value); core.setKey($('key').value);
-    sheetState(); modeHints(); renderList(); toast('सेटिंग save हो गई', 'ok');
-  };
-  $('offSheet').onclick = function () {
-    if (!confirm('Google Sheet बंद कर दें?\n\nआगे से हर entry सिर्फ़ फ़ोन में रहेगी। ' +
-                 'Sheet में जो पहले जा चुकी हैं वे वहीं पड़ी रहेंगी — यहाँ से कुछ नहीं मिटेगा।\n\n' +
-                 'जब चाहो, URL दुबारा डालकर चालू कर सकते हो।')) return;
-    core.disableSheet();
-    $('api').value = ''; $('key').value = '';
-    sheetState(); modeHints(); renderList(); renderLists();
-    toast('✔ Sheet बंद — अब सब कुछ फ़ोन में', 'ok', 4000);
-  };
-  $('testBtn').onclick = async function () {
-    core.setApi($('api').value); core.setKey($('key').value);
-    const out = $('testOut'); out.textContent = 'जाँच रहा है…';
-    try {
-      await core.ping(); const l = await core.refreshLists(); renderLists(); listsInfo();
-      out.textContent = '✔ जुड़ गया: ' + l.labour.length + ' लेबर, ' + l.goods.length + ' सामान, ' + l.types.length + ' कार्य प्रकार';
-      toast('✔ Server से जुड़ गया', 'ok');
-    } catch (e) { out.textContent = '✖ ' + e.message; }
-  };
-  $('clearSent').onclick = function () { if (confirm('सिर्फ भेजी हुई entries का local इतिहास हटेगा (Sheet पर असर नहीं)। ठीक?')) { core.clearSent(); renderList(); toast('इतिहास साफ़', 'ok'); } };
 
   // ---- अपडेट के बटन
   $('upBtn').onclick = function () {
@@ -2538,7 +2329,7 @@
   $('exportCsv').onclick = function () {
     const n = core.queue().length;
     if (!n) { toast('अभी कोई entry नहीं।', 'err'); return; }
-    showData(core.toCSV(), n + ' entry — CSV (Excel/Sheet में paste करो)');
+    showData(core.toCSV(), n + ' entry — CSV (Excel में paste करो)');
   };
   $('exportJson').onclick = function () {
     showData(core.exportJSON(), 'पूरा backup — इसे सुरक्षित जगह रख लो');
@@ -2565,18 +2356,6 @@
   // ---- boot
   (async function boot() {
     if (store.ready) await store.ready();   // local database खुलने तक रुको (पुराना localStorage data अपने-आप आ जाता है)
-    // ?api=…&key=… से एक बार settings भर सकते हो (URL फिर साफ़ हो जाता है)
-    try {
-      const u = new URL(location.href);
-      if (u.searchParams.get('api')) core.setApi(u.searchParams.get('api'));
-      if (u.searchParams.has('key')) core.setKey(u.searchParams.get('key'));
-      if (u.searchParams.get('api') || u.searchParams.has('key')) history.replaceState(null, '', u.pathname);
-    } catch (_) { }
-    // config.js (optional) से एक बार pre-fill — पहले से कुछ set हो तो उसे नहीं छेड़ता
-    try {
-      const cfg = root.JCM_CONFIG || {};
-      if (!core.getApi() && cfg.api) { core.setApi(cfg.api); core.setKey(cfg.key || ''); }
-    } catch (_) { }
     const inApk = /appassets\.androidplatform\.net$/.test(location.hostname);   // Android app (WebView) में चल रहा है
     if (!inApk && 'serviceWorker' in navigator) { navigator.serviceWorker.register('./sw.js').catch(function () { }); }
     setNet();
@@ -2591,11 +2370,7 @@
     renderLists();
     const draft = core.getDraft(); if (draft) loadEntry(draft);
     renderList();
-    if (core.getApi() && online()) {
-      try { await core.refreshLists(); renderLists(); if (draft) loadEntry(draft); } catch (_) { /* cache से चलेगा */ }
-      doSync(true);
-    }
-    // URL भी नहीं और लिस्ट भी नहीं → पहली बार सेटिंग दिखाओ (लिस्ट भर ली हो तो app सीधे चलेगी)
-    if (!core.getApi() && !core.lists()) showView('settings');
+    // लिस्ट ही नहीं भरी → पहली बार सेटिंग दिखाओ (भरी हो तो app सीधे चलेगी)
+    if (!core.lists()) showView('settings');
   })();
 })(typeof window !== 'undefined' ? window : globalThis);

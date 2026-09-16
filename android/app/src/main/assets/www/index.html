@@ -225,17 +225,12 @@
     </div>
 
     <button class="btn" id="save">✔ Save करो</button>
-    <div class="hint" id="saveHint" style="text-align:center;margin-top:8px">Save होते ही entry phone में सुरक्षित; network मिलते ही Google Sheet में जाती है।</div>
+    <div class="hint" id="saveHint" style="text-align:center;margin-top:8px">Save होते ही entry फ़ोन के local database में सुरक्षित।</div>
   </section>
 
   <!-- ================= सूची / sync ================= -->
   <section id="view-list" hidden>
-    <div class="summary" id="countsBox">
-      <div><b id="nPending">0</b><span id="lblPending">बाकी (pending)</span></div>
-      <div><b id="nFailed">0</b><span>अटकी (failed)</span></div>
-      <div><b id="nSent">0</b><span>Sheet में गईं</span></div>
-    </div>
-    <div class="summary" id="soloBox" hidden>
+    <div class="summary" id="soloBox">
       <div><b id="nAll">0</b><span id="soloSafe">दर्ज entry — सब फ़ोन में सुरक्षित</span></div>
     </div>
     <button class="btn blue" id="syncBtn" style="margin-top:0">☁ अभी sync करो</button>
@@ -384,17 +379,6 @@
       </div>
     </div>
     <div class="card">
-      <label>Apps Script Web App URL</label>
-      <input type="url" id="api" placeholder="https://script.google.com/macros/s/…/exec" autocapitalize="off" autocorrect="off" spellcheck="false">
-      <label>App key (Code.gs में APP_KEY जैसा; खाली रखा हो तो खाली)</label>
-      <input type="text" id="key" autocapitalize="off" autocorrect="off" spellcheck="false">
-      <button class="btn blue" id="saveSettings">सेटिंग save करो</button>
-      <button class="btn ghost" id="testBtn">🔌 Test करो (लिस्ट लाओ)</button>
-      <div class="hint" id="testOut"></div>
-      <button class="btn danger" id="offSheet" style="margin-top:10px">Google Sheet बंद करो — सब फ़ोन में रखो</button>
-      <div class="hint" id="sheetState"></div>
-    </div>
-    <div class="card">
       <label style="margin-top:0">मिल का काम का समय (शिफ्ट)</label>
       <div class="hint" style="margin-top:0">इसके अंदर का समय "काम के घंटे", बाहर का "ओवरटाइम" गिना जाता है।</div>
       <div class="row2">
@@ -435,7 +419,7 @@
 
     <div class="card">
       <label>लोकल लिस्ट (बिना internet — हर लाइन में एक नाम)</label>
-      <div class="hint" style="margin-top:0">Sheet न हो तो यहीं भर दो। App इन्हीं से चलेगी।</div>
+      <div class="hint" style="margin-top:0">यहीं भरो — app इन्हीं से चलती है (internet की ज़रूरत नहीं)।</div>
 
       <label>कार्य प्रकार</label>
       <textarea id="llTypes" rows="2" placeholder="लोडिंग&#10;अनलोडिंग"></textarea>
@@ -452,7 +436,7 @@
     <div class="card">
       <label>डेटा — निकालो / backup</label>
       <div class="hint" style="margin-top:0">फ़ोन का data फ़ोन में ही है। महीने में एक बार backup ज़रूर लो।</div>
-      <button class="btn ghost" id="exportCsv">📄 CSV बनाओ (Excel/Sheet के लिए)</button>
+      <button class="btn ghost" id="exportCsv">📄 CSV बनाओ (Excel के लिए)</button>
       <button class="btn ghost" id="exportJson">💾 पूरा backup बनाओ (JSON)</button>
 
       <div id="dataBox" hidden>
@@ -474,19 +458,17 @@
     </div>
 
     <div class="card">
-      <button class="btn ghost" id="refreshLists" style="margin-top:0">↻ लेबर/सामान लिस्ट refresh</button>
-      <div class="hint" id="listsInfo"></div>
+      <div class="hint" id="listsInfo" style="margin-top:0"></div>
       <button class="btn blue" id="installBtn" hidden>📲 App install करो</button>
       <div class="hint" id="installHint"></div>
-      <button class="btn danger" id="clearSent">भेजी हुई entries का इतिहास साफ़ करो</button>
-      <div class="kv" style="margin-top:10px">Version <span id="ver"></span> · pending/failed entries कभी अपने-आप नहीं हटतीं।</div>
+      <div class="kv" style="margin-top:10px">Version <span id="ver"></span> · entries कभी अपने-आप नहीं हटतीं।</div>
     </div>
   </section>
 </main>
 
 <nav class="tabs">
   <button data-view="entry" class="on"><span class="ic">➕</span>नई entry</button>
-  <button data-view="list"><span class="ic">📋</span>सूची<span class="badge" id="badge"></span></button>
+  <button data-view="list"><span class="ic">📋</span>सूची</button>
   <button data-view="buy"><span class="ic">📦</span>खरीद</button>
   <button data-view="report"><span class="ic">📊</span>विश्लेषण</button>
   <button data-view="settings"><span class="ic">⚙</span>सेटिंग</button>

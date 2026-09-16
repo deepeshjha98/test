@@ -1,6 +1,6 @@
 # JCM लोडिंग — Android app (APK), cloud में build
 
-**क्या है:** वही app (form / सूची / सेटिंग, offline queue, Google Sheet sync) — पूरी app APK के अंदर bundled है,
+**क्या है:** वही app (form / सूची / खरीद / विश्लेषण / सेटिंग, offline-first + Supabase cloud backup) — पूरी app APK के अंदर bundled है,
 कोई website host करने की ज़रूरत नहीं। APK GitHub Actions (cloud) पर बनता है — तुम्हारे Mac पर Android Studio नहीं चाहिए।
 Phone पर .apk download → Install → home screen पर "JCM लोडिंग"।
 
@@ -13,7 +13,7 @@ jcm-android-repo/
     app/src/main/java/.../MainActivity.java
   README_ANDROID.md
 ```
-(Backend वही है: नया `Code.gs` + deploy — README_PWA.md का Step 1 पहले कर लो।)
+(Backend अब Supabase है — setup के लिए docs/SUPABASE_SETUP.md देखो। Google Sheet वाला पुराना रास्ता v1.27.0 में हटा दिया गया।)
 
 ## Step 1 — repo बनाओ और push करो (Mac पर, 3 मिनट)
 ```bash
@@ -53,5 +53,5 @@ versionCode अपने-आप बढ़ता है (GitHub run number)।
 Actions → failed run → log की आखिरी 40 लाइनें भेज दो। आम कारण: repo में `.github/` folder push नहीं हुआ (hidden folder), या secrets के नाम में typo।
 
 ## जाँच (पहली बार)
-1. Install → ⚙ Test ✔  2. एक entry → 📋 सूची में "Sheet row N" + Sheet में row  3. Airplane mode में entry → off → अपने-आप sync
-4. Phone rotate/back/app switch → form का draft बचा रहता है  5. Sheet के `लेबर सूची` में नया नाम → ⚙ लिस्ट refresh → chip आ गया
+1. Install → ⚙ में cloud backup की चाबी → ✅  2. एक entry → 📋 सूची में दिखे और cloud में भी पहुँचे  3. Airplane mode में entry → off → अपने-आप cloud में
+4. Phone rotate/back/app switch → form का draft बचा रहता है  5. ⚙ लोकल लिस्ट में नया नाम → chip आ गया
