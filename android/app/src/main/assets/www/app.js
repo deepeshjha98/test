@@ -12,7 +12,7 @@
 (function (root) {
   'use strict';
 
-  const APP_VERSION = '1.31.0';
+  const APP_VERSION = '1.32.0';
   const K = { lists: 'jcm.lists', queue: 'jcm.queue', draft: 'jcm.draft', shift: 'jcm.shift', rates: 'jcm.rates', buys: 'jcm.buys', buyLists: 'jcm.buylists' };   // (jcm.api/jcm.key पुराने Sheet के थे — अब न पढ़े जाते हैं, न मिटाए)
   const DEFAULT_SHIFT = { start: '08:30', finish: '18:30' };   // मिल का सामान्य समय; ⚙ सेटिंग से बदला जा सकता है
   // पैसे की दरें — ⚙ सेटिंग से बदली जा सकती हैं
@@ -2099,6 +2099,22 @@
 
   // ---- events
   document.querySelectorAll('nav.tabs button').forEach(function (b) { b.onclick = function () { showView(b.getAttribute('data-view')); }; });
+
+  // ⚙ सेटिंग: हर हिस्सा एक बटन — दबाने पर खुले, दूसरा खुले तो पहला सिमट जाए
+  function openSet(id, on) {
+    document.querySelectorAll('#view-settings .set').forEach(function (s) {
+      const open = on && s.id === id;
+      s.classList.toggle('open', open);
+      s.querySelector('.setbody').hidden = !open;
+    });
+  }
+  document.querySelectorAll('#view-settings .sethead').forEach(function (b) {
+    b.onclick = function () {
+      const s = b.parentElement;
+      openSet(s.id, s.querySelector('.setbody').hidden);
+      buzz(10);
+    };
+  });
   ['start', 'finish', 'bagsSmall', 'bagsBig', 'labourN', 'date', 'goods'].forEach(function (id) { $(id).addEventListener('change', function () { renderSel(); saveDraft(); }); $(id).addEventListener('input', function () { renderSel(); saveDraft(); }); });
 
   $('save').onclick = async function () {
@@ -2509,7 +2525,7 @@
     renderLists();
     const draft = core.getDraft(); if (draft) loadEntry(draft);
     renderList();
-    // लिस्ट ही नहीं भरी → पहली बार सेटिंग दिखाओ (भरी हो तो app सीधे चलेगी)
-    if (!core.lists()) showView('settings');
+    // लिस्ट ही नहीं भरी → पहली बार सेटिंग दिखाओ, सीधे लोकल-लिस्ट वाला हिस्सा खुला
+    if (!core.lists()) { showView('settings'); openSet('set-lists', true); }
   })();
 })(typeof window !== 'undefined' ? window : globalThis);

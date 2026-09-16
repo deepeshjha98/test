@@ -29,6 +29,14 @@
        नहीं जा सकते, वरना hidden लगाने पर भी चीज़ दिखती रह जाती है। */
     [hidden] { display: none !important; }
     .card { background: var(--card); border-radius: 14px; padding: 14px; box-shadow: 0 1px 3px rgba(0,0,0,.08); margin-bottom: 12px; }
+    /* ⚙ सेटिंग: हर हिस्सा एक बटन — दबाने पर खुलता है */
+    .card.set { padding: 0; }
+    .sethead { display: flex; align-items: center; gap: 8px; width: 100%; border: 0; background: none;
+               font: inherit; font-size: 16px; font-weight: 700; color: var(--text);
+               padding: 15px 14px; text-align: left; }
+    .sethead .chev { margin-left: auto; color: var(--muted); font-size: 15px; transition: transform .15s; }
+    .set.open .sethead .chev { transform: rotate(90deg); }
+    .set .setbody { padding: 0 14px 14px; }
     label { display: block; font-weight: 600; margin: 12px 0 6px; font-size: 14px; }
     label:first-child { margin-top: 0; }
     input, select { width: 100%; font-size: 16px; padding: 12px; border: 1px solid #b9c1cb; border-radius: 10px; background: #fff; color: var(--text); }
@@ -371,8 +379,11 @@
 
   <!-- ================= सेटिंग ================= -->
   <section id="view-settings" hidden>
-    <div class="card">
-      <label style="margin-top:0">☁️ Cloud backup (Supabase)</label>
+    <div class="hint" style="margin:2px 4px 10px">जिसकी सेटिंग खोलनी हो, उस बटन पर दबाओ।</div>
+
+    <div class="card set" id="set-cloud">
+      <button type="button" class="sethead">☁️ Cloud backup <span class="chev">▸</span></button>
+      <div class="setbody" hidden>
       <div class="hint" style="margin-top:0" id="supaState"></div>
       <div id="supaForm">
         <div id="supaSrv">
@@ -393,9 +404,12 @@
         </div>
         <button class="btn danger" id="supaOff" style="margin-top:10px">Cloud से हटाओ — data फ़ोन में रहेगा</button>
       </div>
+      </div>
     </div>
-    <div class="card">
-      <label style="margin-top:0">मिल का काम का समय (शिफ्ट)</label>
+
+    <div class="card set" id="set-shift">
+      <button type="button" class="sethead">🕗 काम का समय (शिफ्ट) <span class="chev">▸</span></button>
+      <div class="setbody" hidden>
       <div class="hint" style="margin-top:0">इसके अंदर का समय "काम के घंटे", बाहर का "ओवरटाइम" गिना जाता है।</div>
       <div class="row2">
         <div><label>शुरू</label><input type="time" id="shStart"></div>
@@ -403,10 +417,12 @@
       </div>
       <button class="btn blue" id="saveShift">शिफ्ट save करो</button>
       <div class="hint" id="shiftInfo"></div>
+      </div>
     </div>
 
-    <div class="card">
-      <label style="margin-top:0">पैसे की दरें</label>
+    <div class="card set" id="set-rates">
+      <button type="button" class="sethead">💰 पैसे की दरें <span class="chev">▸</span></button>
+      <div class="setbody" hidden>
       <div class="hint" style="margin-top:0">विश्लेषण इन्हीं से लागत और कमाई गिनता है।</div>
       <label>दिहाड़ी ₹ / मज़दूर-घंटा</label>
       <input type="number" id="rWage" inputmode="decimal" min="0" step="1" placeholder="50">
@@ -419,10 +435,12 @@
       <div class="hint">दिहाड़ी सिर्फ़ काम के घंटों वाले हिस्से पर लगती है — ओवरटाइम में नहीं। बोरा-दर दोनों में। kg-सीमा: इतने kg तक का पैक "छोटा", उससे ऊपर "बड़ा" — ख़रीद से अनलोडिंग बनाते समय यही लगती है।</div>
       <button class="btn blue" id="saveRates">दरें save करो</button>
       <div class="hint" id="ratesInfo"></div>
+      </div>
     </div>
 
-    <div class="card">
-      <label style="margin-top:0">खरीद की लिस्ट</label>
+    <div class="card set" id="set-buylists">
+      <button type="button" class="sethead">📦 खरीद की लिस्ट <span class="chev">▸</span></button>
+      <div class="setbody" hidden>
       <div class="hint" style="margin-top:0">📦 खरीद में इन्हीं में से चुनना होगा।</div>
 
       <label>सामान — किस्म, वज़न और भाव</label>
@@ -433,11 +451,13 @@
       <textarea id="blParties" rows="4" placeholder="सप्लायर का नाम"></textarea>
       <button class="btn blue" id="saveBuyLists">खरीद की लिस्ट save करो</button>
       <div class="hint" id="buyListsInfo"></div>
+      </div>
     </div>
 
-    <div class="card">
-      <label>लोकल लिस्ट (बिना internet — हर लाइन में एक नाम)</label>
-      <div class="hint" style="margin-top:0">यहीं भरो — app इन्हीं से चलती है (internet की ज़रूरत नहीं)।</div>
+    <div class="card set" id="set-lists">
+      <button type="button" class="sethead">📝 लोकल लिस्ट <span class="chev">▸</span></button>
+      <div class="setbody" hidden>
+      <div class="hint" style="margin-top:0">यहीं भरो — app इन्हीं से चलती है (internet की ज़रूरत नहीं)। हर लाइन में एक नाम।</div>
 
       <label>कार्य प्रकार</label>
       <textarea id="llTypes" rows="2" placeholder="लोडिंग&#10;अनलोडिंग"></textarea>
@@ -446,10 +466,12 @@
       <textarea id="llGoods" rows="3" placeholder="चूड़ा&#10;धान&#10;चावल"></textarea>
 
       <button class="btn blue" id="saveLists">लिस्ट फ़ोन में save करो</button>
+      </div>
     </div>
 
-    <div class="card">
-      <label>डेटा — निकालो / backup</label>
+    <div class="card set" id="set-data">
+      <button type="button" class="sethead">💾 डेटा — backup / restore <span class="chev">▸</span></button>
+      <div class="setbody" hidden>
       <div class="hint" style="margin-top:0">फ़ोन का data फ़ोन में ही है। महीने में एक बार backup ज़रूर लो।</div>
       <button class="btn ghost" id="exportCsv">📄 CSV बनाओ (Excel के लिए)</button>
       <button class="btn ghost" id="exportJson">💾 पूरा backup बनाओ (JSON)</button>
@@ -470,6 +492,7 @@
 
       <div class="kv" id="dbInfo" style="margin-top:12px"></div>
       <div class="warn" id="dbErr" hidden></div>
+      </div>
     </div>
 
     <div class="card">
