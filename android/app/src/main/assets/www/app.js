@@ -12,7 +12,7 @@
 (function (root) {
   'use strict';
 
-  const APP_VERSION = '1.27.0';
+  const APP_VERSION = '1.28.0';
   const K = { lists: 'jcm.lists', queue: 'jcm.queue', draft: 'jcm.draft', shift: 'jcm.shift', rates: 'jcm.rates', buys: 'jcm.buys', buyLists: 'jcm.buylists' };   // (jcm.api/jcm.key पुराने Sheet के थे — अब न पढ़े जाते हैं, न मिटाए)
   const DEFAULT_SHIFT = { start: '08:30', finish: '18:30' };   // मिल का सामान्य समय; ⚙ सेटिंग से बदला जा सकता है
   // पैसे की दरें — ⚙ सेटिंग से बदली जा सकती हैं
@@ -2160,7 +2160,8 @@
     const need = { quintal: [x.kg, 'वज़न'], unit: [x.units, UNIT + ' की गिनती'],
                    bag: [x.bags, PACK + ' की गिनती'], lump: [x.bags, PACK + ' की गिनती'] }[x.rateBy];
     if (need && !(need[0] > 0)) { toast(need[1] + ' भरो — उसके बिना रक़म ₹0 बन जाएगी।', 'err', 4000); return; }
-    if (draftLineAt < 0) draftBuy.lines.push(draftLine); else draftBuy.lines[draftLineAt] = draftLine;
+    // नया सामान ऊपर जुड़े — बटन ऊपर है, ताज़ा जोड़ा हुआ आँख के सामने रहे
+    if (draftLineAt < 0) draftBuy.lines.unshift(draftLine); else draftBuy.lines[draftLineAt] = draftLine;
     closeItemModal();
     renderBuyForm();
   };
